@@ -252,10 +252,15 @@ def main_loop():
         elapsed = time.time() - cycle_start
         sleep_time = max(0, delay - elapsed)
         print(f"[SLEEP] Waiting {sleep_time:.1f}s...")
+
+        print("\n[STOP] press Ctrl+C")
         time.sleep(sleep_time)
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    main_loop()
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        print("\n[STOP] Ctrl+C pressed — shutting down.")
