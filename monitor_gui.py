@@ -2,7 +2,7 @@ import os
 import threading
 import queue
 import time
-from tkinter import Tk, Frame, Checkbutton, BooleanVar, Label, Entry, Button, Text, Scrollbar, RIGHT, LEFT, BOTH, END, N, S, E, W, TOP, X, Y, IntVar, StringVar, messagebox
+from tkinter import Tk, Frame, Checkbutton, BooleanVar, Label, Entry, Button, Text, Scrollbar, RIGHT, LEFT, BOTH, END, N, S, E, W, EW, TOP, X, Y, IntVar, StringVar, messagebox
 
 from monitor import main_loop, DB_PATH, EXPORT_PATH
 
@@ -37,11 +37,17 @@ class VintedMonitorGUI:
         Label(settings, text="Min price (Ft):").grid(row=1, column=0, sticky=W, pady=5)
         Entry(settings, textvariable=self.min_price_var, width=12).grid(row=1, column=0, sticky=W, padx=(90, 0))
 
+        Label(settings, text="Vinted URL:").grid(row=2, column=0, sticky=W, pady=5)
+        self.url_var = StringVar()
+        Entry(settings, textvariable=self.url_var, width=60).grid(row=2, column=1, columnspan=3, sticky=EW, padx=(5, 0))
+
         self.start_btn = Button(settings, text="Start", command=self.toggle_monitoring, width=12)
         self.start_btn.grid(row=1, column=2, sticky=E, padx=(0, 5))
 
         self.reset_btn = Button(settings, text="Reset DB & JSON", command=self.reset_data, width=14)
         self.reset_btn.grid(row=1, column=3, sticky=E)
+
+        settings.columnconfigure(1, weight=1)
 
         # ── Log frame ──
         log_frame = Frame(self.root, padx=10, pady=10)
@@ -97,6 +103,7 @@ class VintedMonitorGUI:
             self._log(msg)
 
         try:
+            url = self.url_var.get().strip() or None
             main_loop(
                 mock_mode=self.mock_var.get(),
                 discord_enabled=self.discord_var.get(),
@@ -104,6 +111,7 @@ class VintedMonitorGUI:
                 min_price=min_price,
                 log_func=log_func,
                 stop_event=stop_event,
+                target_url=url,
             )
         except Exception as e:
             self._log(f"FATAL: {e}")

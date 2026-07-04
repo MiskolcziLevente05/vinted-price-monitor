@@ -4,7 +4,7 @@ import time
 import random
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -36,9 +36,9 @@ def get_page_source(url, mock_mode=None):
     """Return HTML page source.
     When mock_mode is True, read from mock/test_vinted_szep.html.
     When False, use Selenium + selenium-stealth to fetch live page.
-    Defaults to global MOCK_MODE.
     """
-    if mock_mode if mock_mode is not None else MOCK_MODE:
+    mm = mock_mode if mock_mode is not None else MOCK_MODE
+    if mm:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         mock_path = os.path.join(base_dir, "mock", "test_vinted_szep.html")
         if not os.path.isfile(mock_path):
@@ -79,10 +79,7 @@ def get_page_source(url, mock_mode=None):
 # ─── HTML Parsing ─────────────────────────────────────────────────────────────
 
 def parse_listings(html):
-    """Extract item listings from Vinted HTML using BeautifulSoup.
-    Targets cards via data-testid starting with 'grid-item'.
-    Returns a list of dicts with keys: id, title, price, url.
-    """
+    """Extract item listings from Vinted HTML using BeautifulSoup."""
     soup = BeautifulSoup(html, "html.parser")
     items = []
 
@@ -183,7 +180,7 @@ def send_discord_alert(webhook_url, item):
                     {"name": "Link", "value": item["url"], "inline": False},
                 ],
                 "footer": {"text": f"Item ID: {item['id']}"},
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ]
     }
@@ -214,7 +211,7 @@ def append_to_file(item):
         "title": item["title"],
         "price": item["price"],
         "url": item["url"],
-        "found_at": datetime.utcnow().isoformat() + "Z",
+        "found_at": datetime.now(timezone.utc).isoformat(),
     })
     with open(EXPORT_PATH, "w", encoding="utf-8") as f:
         json.dump(items, f, indent=2, ensure_ascii=False)
@@ -223,13 +220,8 @@ def append_to_file(item):
 
 # ─── Main Polling Loop ────────────────────────────────────────────────────────
 
-def main_loop(mock_mode=None, discord_enabled=None, export_json=None, min_price=None, log_func=print, stop_event=None):
-    """Polling loop: fetch → parse → filter → alert → sleep with jitter.
-    
-    Parameters override global constants when not None.
-    log_func is called with each log line instead of print.
-    stop_event: threading.Event — when set, the loop exits gracefully.
-    """
+def main_loop(mock_mode=None, discord_enabled=None, export_json=None, min_price=None, log_func=print, stop_event=None, target_url=None):
+    """Polling loop: fetch → parse → filter → alert → sleep with jitter."""
     mm = mock_mode if mock_mode is not None else MOCK_MODE
     de = discord_enabled if discord_enabled is not None else DISCORD_ENABLED
     ej = export_json if export_json is not None else EXPORT_TO_JSON
@@ -237,60 +229,66 @@ def main_loop(mock_mode=None, discord_enabled=None, export_json=None, min_price=
 
     log = lambda msg: log_func(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-    webhook_url, target_url = load_config(require_target=not mm)
+    _, env_url = load_config(require_target=False)
+    webhook_url, _ = load_config(require_target=not mm)
+    if not target_url:
+        target_url = env_url
     conn = init_db()
 
     log(f"Monitoring Vinted | MOCK={mm} | DISCORD={de} | JSON={ej} | MIN_PRICE={mp}")
     if not mm:
         log(f"Target URL: {target_url}")
 
-    while not (stop_event and stop_event.is_set()):
-        cycle_start = time.time()
-        try:
-            if stop_event and stop_event.is_set():
-                break
-            log("Fetching page...")
-            html = get_page_source(target_url, mock_mode=mm)
-            listings = parse_listings(html)
-            log(f"Found {len(listings)} listing(s)")
-
-            new_count = 0
-            for item in listings:
+    try:
+        while not (stop_event and stop_event.is_set()):
+            cycle_start = time.time()
+            try:
                 if stop_event and stop_event.is_set():
                     break
-                price_val = parse_price_numeric(item["price"])
-                if mp > 0 and price_val < mp:
-                    log(f"SKIP (below min price) Item {item['id']}: {item['title']} — {item['price']}")
-                    continue
-                if check_and_insert(conn, item):
-                    log(f"NEW Item {item['id']}: {item['title']} — {item['price']}")
-                    if de:
-                        send_discord_alert(webhook_url, item)
-                    if ej:
-                        append_to_file(item)
-                    new_count += 1
+                log("Fetching page...")
+                html = get_page_source(target_url, mock_mode=mm)
+                listings = parse_listings(html)
+                log(f"Found {len(listings)} listing(s)")
 
-            log(f"{new_count} new item(s) — {len(listings)} total parsed")
+                new_count = 0
+                for item in listings:
+                    if stop_event and stop_event.is_set():
+                        break
+                    price_val = parse_price_numeric(item["price"])
+                    if mp > 0 and price_val < mp:
+                        log(f"SKIP (below min price) Item {item['id']}: {item['title']} — {item['price']}")
+                        continue
+                    if check_and_insert(conn, item):
+                        log(f"NEW Item {item['id']}: {item['title']} — {item['price']}")
+                        if de:
+                            send_discord_alert(webhook_url, item)
+                        if ej:
+                            append_to_file(item)
+                        new_count += 1
 
-        except FileNotFoundError as e:
-            log(f"FATAL: {e}")
-            break
-        except Exception as e:
-            log(f"ERROR: {e}")
+                log(f"{new_count} new item(s) — {len(listings)} total parsed")
 
-        if stop_event and stop_event.is_set():
-            break
-        if mm:
-            delay = random.uniform(10, 30)
-        else:
-            delay = random.uniform(300, 600)
-        elapsed = time.time() - cycle_start
-        sleep_time = max(0, delay - elapsed)
-        log(f"Sleeping {sleep_time:.1f}s...")
-        for _ in range(int(sleep_time)):
+            except FileNotFoundError as e:
+                log(f"FATAL: {e}")
+                break
+            except Exception as e:
+                log(f"ERROR: {e}")
+
             if stop_event and stop_event.is_set():
                 break
-            time.sleep(1)
+                
+            delay = random.uniform(10, 30) if mm else random.uniform(300, 600)
+            elapsed = time.time() - cycle_start
+            sleep_time = max(0, delay - elapsed)
+            log(f"Sleeping {sleep_time:.1f}s...")
+            
+            for _ in range(int(sleep_time)):
+                if stop_event and stop_event.is_set():
+                    break
+                time.sleep(1)
+    finally:
+        conn.close()
+        log("Database connection closed gracefully.")
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
