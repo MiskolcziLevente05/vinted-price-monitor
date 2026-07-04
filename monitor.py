@@ -14,29 +14,31 @@ import requests
 MOCK_MODE = True
 DISCORD_ENABLED = True
 EXPORT_TO_JSON = True
+MIN_PRICE = 0
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-def load_config():
+def load_config(require_target=True):
     """Load DISCORD_WEBHOOK_URL and VINTED_TARGET_URL from .env file."""
     load_dotenv()
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     target_url = os.getenv("VINTED_TARGET_URL")
     if DISCORD_ENABLED and not webhook_url:
         raise ValueError("DISCORD_WEBHOOK_URL is not set in .env (or set DISCORD_ENABLED = False)")
-    if not target_url:
-        raise ValueError("VINTED_TARGET_URL is not set in .env (or set MOCK_MODE = false)")
+    if require_target and not target_url:
+        raise ValueError("VINTED_TARGET_URL is not set in .env")
     return webhook_url, target_url
 
 
 # ─── Page Source Acquisition ──────────────────────────────────────────────────
 
-def get_page_source(url):
+def get_page_source(url, mock_mode=None):
     """Return HTML page source.
-    When MOCK_MODE is True, read from mock/test_vinted_szep.html.
+    When mock_mode is True, read from mock/test_vinted_szep.html.
     When False, use Selenium + selenium-stealth to fetch live page.
+    Defaults to global MOCK_MODE.
     """
-    if MOCK_MODE:
+    if mock_mode if mock_mode is not None else MOCK_MODE:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         mock_path = os.path.join(base_dir, "mock", "test_vinted_szep.html")
         if not os.path.isfile(mock_path):
@@ -117,6 +119,17 @@ def parse_listings(html):
             continue
 
     return items
+
+
+def parse_price_numeric(price_str):
+    """Extract numeric value from a Vinted price string like '1 400 Ft'."""
+    if not price_str or price_str == "N/A":
+        return 0
+    clean = price_str.replace("\xa0", "").replace(" ", "").replace("Ft", "").strip()
+    try:
+        return float(clean)
+    except ValueError:
+        return 0
 
 
 # ─── Database Layer ───────────────────────────────────────────────────────────
@@ -210,51 +223,74 @@ def append_to_file(item):
 
 # ─── Main Polling Loop ────────────────────────────────────────────────────────
 
-def main_loop():
-    """Polling loop: fetch → parse → filter → alert → sleep with jitter."""
-    webhook_url, target_url = load_config()
+def main_loop(mock_mode=None, discord_enabled=None, export_json=None, min_price=None, log_func=print, stop_event=None):
+    """Polling loop: fetch → parse → filter → alert → sleep with jitter.
+    
+    Parameters override global constants when not None.
+    log_func is called with each log line instead of print.
+    stop_event: threading.Event — when set, the loop exits gracefully.
+    """
+    mm = mock_mode if mock_mode is not None else MOCK_MODE
+    de = discord_enabled if discord_enabled is not None else DISCORD_ENABLED
+    ej = export_json if export_json is not None else EXPORT_TO_JSON
+    mp = min_price if min_price is not None else MIN_PRICE
+
+    log = lambda msg: log_func(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+    webhook_url, target_url = load_config(require_target=not mm)
     conn = init_db()
 
-    print(f"[START] Monitoring Vinted | MOCK_MODE={MOCK_MODE} | DISCORD_ENABLED={DISCORD_ENABLED} | EXPORT_TO_JSON={EXPORT_TO_JSON}")
-    if not MOCK_MODE:
-        print(f"[START] Target URL: {target_url}")
+    log(f"Monitoring Vinted | MOCK={mm} | DISCORD={de} | JSON={ej} | MIN_PRICE={mp}")
+    if not mm:
+        log(f"Target URL: {target_url}")
 
-    while True:
+    while not (stop_event and stop_event.is_set()):
         cycle_start = time.time()
         try:
-            print(f"\n[CYCLE] {datetime.now().isoformat()} — Fetching page...")
-            html = get_page_source(target_url)
+            if stop_event and stop_event.is_set():
+                break
+            log("Fetching page...")
+            html = get_page_source(target_url, mock_mode=mm)
             listings = parse_listings(html)
-            print(f"[PARSE] Found {len(listings)} listing(s)")
+            log(f"Found {len(listings)} listing(s)")
 
             new_count = 0
             for item in listings:
+                if stop_event and stop_event.is_set():
+                    break
+                price_val = parse_price_numeric(item["price"])
+                if mp > 0 and price_val < mp:
+                    log(f"SKIP (below min price) Item {item['id']}: {item['title']} — {item['price']}")
+                    continue
                 if check_and_insert(conn, item):
-                    print(f"[NEW] Item {item['id']}: {item['title']} — {item['price']}")
-                    if DISCORD_ENABLED:
+                    log(f"NEW Item {item['id']}: {item['title']} — {item['price']}")
+                    if de:
                         send_discord_alert(webhook_url, item)
-                    if EXPORT_TO_JSON:
+                    if ej:
                         append_to_file(item)
                     new_count += 1
 
-            print(f"[CYCLE] {new_count} new item(s) — {len(listings)} total parsed")
+            log(f"{new_count} new item(s) — {len(listings)} total parsed")
 
         except FileNotFoundError as e:
-            print(f"[FATAL] {e}")
+            log(f"FATAL: {e}")
             break
         except Exception as e:
-            print(f"[ERROR] Cycle failed: {e}")
+            log(f"ERROR: {e}")
 
-        if MOCK_MODE:
+        if stop_event and stop_event.is_set():
+            break
+        if mm:
             delay = random.uniform(10, 30)
         else:
             delay = random.uniform(300, 600)
         elapsed = time.time() - cycle_start
         sleep_time = max(0, delay - elapsed)
-        print(f"[SLEEP] Waiting {sleep_time:.1f}s...")
-
-        print("\n[STOP] press Ctrl+C")
-        time.sleep(sleep_time)
+        log(f"Sleeping {sleep_time:.1f}s...")
+        for _ in range(int(sleep_time)):
+            if stop_event and stop_event.is_set():
+                break
+            time.sleep(1)
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
