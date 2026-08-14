@@ -5,6 +5,7 @@ import random
 import json
 import sqlite3
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -46,6 +47,17 @@ def get_page_source(url, mock_mode=None):
         with open(mock_path, "r", encoding="utf-8") as f:
             return f.read()
 
+    driver = _create_driver()
+    try:
+        driver.get(url)
+        time.sleep(5)
+        return driver.page_source
+    finally:
+        driver.quit()
+
+
+def _create_driver():
+    """Create a Selenium Chrome driver with stealth settings."""
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium_stealth import stealth
@@ -67,13 +79,7 @@ def get_page_source(url, mock_mode=None):
         renderer="Intel Iris OpenGL Engine",
         fix_hairline=True,
     )
-
-    try:
-        driver.get(url)
-        time.sleep(5)
-        return driver.page_source
-    finally:
-        driver.quit()
+    return driver
 
 
 # ─── HTML Parsing ─────────────────────────────────────────────────────────────
@@ -216,6 +222,398 @@ def append_to_file(item):
     with open(EXPORT_PATH, "w", encoding="utf-8") as f:
         json.dump(items, f, indent=2, ensure_ascii=False)
     print(f"[FILE] Appended to {EXPORT_PATH}")
+
+
+# ─── Search URL Builder & Filter Options ────────────────────────────────────
+
+MARKET_URL = "https://www.vinted.hu"
+CURRENCY = "HUF"
+
+ORDER_OPTIONS = [
+    ("relevance", "Relevancia"),
+    ("newest_first", "Legújabb"),
+    ("price_low_to_high", "Ár növekvő"),
+    ("price_high_to_low", "Ár csökkenő"),
+]
+
+STATUS_OPTIONS = [
+    ("1", "Új címke nélkül"),
+    ("2", "Újszerű"),
+    ("3", "Jó"),
+    ("4", "Közepes"),
+    ("6", "Új címkével"),
+]
+
+
+def build_search_url(params=None):
+    """Build a Vinted catalog search URL from a filter params dict.
+
+    List params are mapped to Vinted's `{code}_ids[]` query parameters
+    (e.g. `size_ids[]`, `color_ids[]`, `brand_collection_ids[]`), except
+    `catalog` which becomes `catalog[]`.
+    """
+    params = params or {}
+    currency = str(params.get("currency") or CURRENCY)
+    qs = [("currency", currency)]
+
+    for key in ("search_text", "order", "price_from", "price_to"):
+        val = params.get(key)
+        if val not in (None, ""):
+            qs.append((key, str(val)))
+
+    for key, vals in params.items():
+        if not isinstance(vals, (list, tuple)):
+            continue
+        if key == "catalog":
+            name = "catalog[]"
+        else:
+            name = f"{key}_ids[]"
+        for v in vals:
+            if str(v).strip():
+                qs.append((name, str(v)))
+
+    if params.get("discount"):
+        qs.append(("discount_ids[]", "4"))
+    if params.get("favourite"):
+        qs.append(("favourite", "true"))
+    if params.get("handicraft"):
+        qs.append(("is_handicraft", "true"))
+    if params.get("give_away"):
+        qs.append(("is_for_give_away", "true"))
+
+    url = f"{MARKET_URL}/catalog"
+    if qs:
+        url += "?" + urlencode(qs, doseq=True)
+    return url
+
+
+def fetch_category_tree():
+    """Fetch the full category tree (Női, Férfi, ... plus subcategories) from the Vinted main page."""
+    driver = _create_driver()
+    try:
+        driver.get(f"{MARKET_URL}/")
+        time.sleep(6)
+        tree = _extract_flight_json(driver.page_source, "catalogTree")
+        if not tree:
+            raise RuntimeError("catalogTree not found on main page")
+        return tree
+    finally:
+        driver.quit()
+
+
+def _extract_flight_json(html, key):
+    """Extract a JSON value for `key` from a Next.js RSC flight payload in the page HTML."""
+    pattern = re.compile(r'self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)')
+    for raw in pattern.findall(html):
+        try:
+            payload = json.loads('"' + raw + '"')
+        except (ValueError, json.JSONDecodeError):
+            continue
+        marker = '"' + key + '"'
+        if marker not in payload:
+            continue
+        idx = payload.index(marker) + len(marker)
+        idx = payload.index(":", idx) + 1
+        start = idx
+        while start < len(payload) and payload[start] in " \t\n":
+            start += 1
+        if payload[start] not in "[{":
+            continue
+        val = _match_bracket(payload, start)
+        if val is None:
+            continue
+        try:
+            return json.loads(val)
+        except (ValueError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def _match_bracket(s, i):
+    """Return the balanced bracket expression starting at s[i] (must be '[' or '{')."""
+    depth = 0
+    in_str = False
+    j = i
+    n = len(s)
+    while j < n:
+        c = s[j]
+        if in_str:
+            if c == "\\":
+                j += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c in "[{":
+            depth += 1
+        elif c in "]}":
+            depth -= 1
+            if depth == 0:
+                return s[i:j + 1]
+        j += 1
+    return None
+
+
+def _extract_catalog_facets(html):
+    """Extract filter facets (code -> [(id, title)]) from the RSC flight payload
+    of a Vinted catalog page. Lazy facets (empty 'options') are skipped here;
+    callers may fall back to the facet API for those codes."""
+    return {code: meta["options"]
+            for code, meta in _extract_catalog_filters(html).items()
+            if meta["options"]}
+
+
+def _extract_catalog_filters(html):
+    """Extract the full category filter set (code -> {"title", "options"}) from
+    the RSC flight payload of a Vinted catalog page. Includes lazy facets whose
+    options are empty (loaded when their chip is expanded)."""
+    pattern = re.compile(r'self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)')
+    result = {}
+    for raw in pattern.findall(html):
+        try:
+            payload = json.loads('"' + raw + '"')
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if '"is_async_facet"' not in payload:
+            continue
+        for m in re.finditer(r'"id":\d+,"title":"((?:[^"\\]|\\.)*)","code":"([a-z_]+)"',
+                             payload):
+            title, code = m.group(1), m.group(2)
+            after = payload[m.end():]
+            opt = after.find('"options"')
+            iaf = after.find('"is_async_facet"')
+            if opt < 0 or iaf < 0 or opt > iaf:
+                continue
+            arr = after.find("[", opt + 9)
+            if arr < 0:
+                continue
+            seg = _match_bracket(after, arr)
+            pairs = []
+            if seg:
+                try:
+                    opts = json.loads(seg)
+                except (ValueError, json.JSONDecodeError):
+                    opts = None
+                for o in opts or []:
+                    if isinstance(o, dict) and o.get("id") is not None:
+                        pairs.append((o["id"], o.get("title") or ""))
+            if code not in result:
+                result[code] = {"title": title, "options": pairs}
+    return result
+
+
+_API_FILTERS = f"{MARKET_URL}/api/v2/catalog/filters"
+_API_FACETS = f"{MARKET_URL}/api/v2/catalog/filters/facets"
+_COMMON_FACETS = ["brand", "status", "color", "size", "material", "patterns",
+                  "brand_collection", "device_size", "car_brand"]
+
+
+def _api_json(driver, url, attempts=3):
+    """Navigate to a Vinted JSON API URL and return the parsed response.
+    Retries on transient bot/rate-limit responses."""
+    last = None
+    for _ in range(max(1, attempts)):
+        try:
+            driver.get(url)
+            time.sleep(2)
+            body = driver.find_element("tag name", "body").text.strip()
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                raise ValueError("api response is not a JSON object")
+            return data
+        except Exception as e:
+            last = e
+            time.sleep(3)
+    raise last if last else RuntimeError("api failed")
+
+
+def _pair_options(data, node="options"):
+    """Normalise an API 'options' array to [(id, title)] pairs."""
+    pairs = []
+    for o in (data.get(node) or []):
+        if not isinstance(o, dict):
+            continue
+        oid = o.get("id")
+        title = o.get("title") or o.get("name")
+        if oid is not None and title:
+            pairs.append((oid, title))
+    return pairs
+
+
+def _catalog_id_from_url(cat_url):
+    """Extract the catalog id from a Vinted catalog URL (path or query form)."""
+    if not cat_url:
+        return None
+    m = re.search(r"/catalog/(\d+)", cat_url)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"catalog\[\]=(\d+)", cat_url)
+    return int(m.group(1)) if m else None
+
+
+def fetch_category_filters(cat_url=None, catalog_id=None):
+    """Load a category's full live filter set.
+
+    Group metadata comes from /api/v2/catalog/filters; the options of every
+    filter group (static or lazy) are loaded through /api/v2/catalog/filters/
+    facets?filter_code=<code>, which serves the truly non-static facets too.
+    Returns {code: {"title": str, "options": [(id, title)]}}.
+    """
+    if catalog_id is None:
+        catalog_id = _catalog_id_from_url(cat_url)
+    if catalog_id is None:
+        return {}
+    catalog_id = str(catalog_id)
+
+    driver = _create_driver()
+    try:
+        filter_meta = {}
+        filters = {}
+
+        # ── 1) csoport-metadata (code, title, is_lazy) ─────────────────────
+        # A Vinted néha üres listát ad; ilyenkor újrapróbáljuk a csoportlekérést.
+        groups = []
+        for _ in range(3):
+            data = _api_json(driver, _API_FILTERS + "?page=1&per_page=96&currency="
+                             + CURRENCY + "&catalog_ids=" + catalog_id)
+            groups = [g for g in (data.get("filters") or []) if isinstance(g, dict)]
+            if groups:
+                break
+            time.sleep(3)
+        if not groups:
+            return {}
+
+        lazy = []
+        for g in groups:
+            code = g.get("code")
+            if not code or code == "price":
+                continue
+            title = g.get("title") or code
+            filter_meta[code] = title
+            opts = _pair_options(g)
+            if opts:
+                filters[code] = {"title": title, "options": opts}
+            elif g.get("is_lazy"):
+                lazy.append(code)
+
+        # ── 2) nem-statikus (lazy) facetek opciói ──────────────────────────
+        for code in lazy:
+            url = (_API_FACETS + "?catalog_ids=" + catalog_id
+                   + "&filter_code=" + code)
+            pairs = []
+            for _ in range(2):
+                try:
+                    pairs = _pair_options(_api_json(driver, url))
+                except Exception:
+                    pairs = []
+                if pairs:
+                    break
+                time.sleep(2)
+            if pairs:
+                filters[code] = {"title": filter_meta.get(code, code),
+                                 "options": pairs}
+
+        # ── 3) függő facetek (pl. Modell) márka-próbákkal ───────────────────
+        _expand_dependent_facets(driver, catalog_id, filter_meta, filters)
+    finally:
+        driver.quit()
+    return filters
+
+
+def _expand_dependent_facets(driver, catalog_id, filter_meta, filters):
+    """Some facets (e.g. brand_collection/Modell) only appear once another
+    filter (e.g. a brand) is selected. Probe a few popular brands; whenever a
+    brand selection surfaces a NEW lazy group, load its options and merge it.
+    """
+    probes = [str(bid) for bid, _ in (filters.get("brand", {}).get("options") or [])][:3]
+    for bid in probes:
+        try:
+            url = (_API_FILTERS + "?page=1&per_page=96&currency=" + CURRENCY
+                   + "&catalog_ids=" + catalog_id + "&brand_ids=" + bid)
+            data = _api_json(driver, url)
+        except Exception:
+            continue
+        for g in (data.get("filters") or []):
+            if not isinstance(g, dict):
+                continue
+            code = g.get("code")
+            if not code or code in filters or code == "price":
+                continue
+            opts = _pair_options(g)
+            if not opts:
+                try:
+                    fdata = _api_json(driver, _API_FACETS + "?catalog_ids="
+                                      + catalog_id + "&filter_code=" + code
+                                      + "&brand_ids=" + bid)
+                    opts = _pair_options(fdata)
+                except Exception:
+                    continue
+            if opts:
+                filters[code] = {"title": filter_meta.get(code, code),
+                                 "options": opts}
+
+
+def fetch_facet_options(search_text="", catalog_ids=None, facet_codes=None):
+    """Best-effort fetch of facet options for given codes via
+    /api/v2/catalog/filters/facets. Returns {code: [(id, title)]}."""
+    catalog_ids = [str(c) for c in (catalog_ids or []) if c]
+    facet_codes = list(facet_codes or ())
+    qs = {"page": "1", "per_page": "96", "currency": CURRENCY}
+    if search_text:
+        qs["search_text"] = search_text
+    if catalog_ids:
+        qs["catalog_ids"] = catalog_ids
+    base = _API_FACETS + "?" + urlencode(qs, doseq=True)
+
+    codes = facet_codes or _COMMON_FACETS
+    driver = _create_driver()
+    result = {}
+    try:
+        driver.get(f"{MARKET_URL}/catalog")
+        time.sleep(2)
+        for code in codes:
+            try:
+                pairs = _pair_options(_api_json(driver, base + "&filter_code=" + code))
+            except Exception:
+                pairs = []
+            if pairs:
+                result[code] = pairs
+    finally:
+        driver.quit()
+    return result
+
+
+def fetch_brands(keyword):
+    """Search brands on Vinted; returns a list of (id, title) tuples."""
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return []
+    url = f"{MARKET_URL}/api/v2/brands?{urlencode({'search_text': keyword, 'per_page': '20'})}"
+
+    driver = _create_driver()
+    try:
+        driver.get(f"{MARKET_URL}/catalog")
+        time.sleep(2)
+        driver.get(url)
+        time.sleep(2)
+        body = driver.find_element("tag name", "body").text
+        data = json.loads(body)
+    finally:
+        driver.quit()
+
+    if isinstance(data, dict):
+        data = data.get("brands", data.get("items", []))
+    pairs = []
+    seen = set()
+    for b in data or []:
+        if not isinstance(b, dict):
+            continue
+        bid = b.get("id")
+        title = b.get("title")
+        if bid is not None and title and bid not in seen:
+            pairs.append((bid, title))
+            seen.add(bid)
+    return pairs
 
 
 # ─── Main Polling Loop ────────────────────────────────────────────────────────
