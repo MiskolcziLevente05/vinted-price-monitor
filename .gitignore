@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+found_items.json
+.env
