@@ -1,4 +1,7 @@
 __pycache__/
 *.py[cod]
-found_items.json
 .env
+vinted_monitor.db*
+settings.db*
+monitor_log.txt
+_env_backup.txt
