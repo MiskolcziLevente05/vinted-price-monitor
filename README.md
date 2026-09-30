@@ -43,13 +43,13 @@ szűrő űrlap ──► szűrő API (requests + Vinted sütik) ──► chip-e
 * **Live Category Facets:** selecting a category loads its real filter groups (brand, size, color, material, status, pattern) straight from the Vinted API, so the filter chips are never empty — in about half a second.
 * **Structured item extraction:** title, numeric price, full-size image URL, size and status are read from the page's flight payload, so nothing depends on fragile CSS selectors. The DOM parser stays as a fallback.
 * **Pagination:** a watch can walk up to 10 result pages per cycle (`?page=N`), which Vinted serves as fresh, nearly disjoint item sets.
-* **Multiple watches:** any number of saved searches, each with its own keyword, filters, page count, minimum price and notification targets. They are polled in one rotating cycle and survive a restart.
+* **Multiple watches:** any number of saved searches, each with its own keyword, filters, page count, minimum price and notification targets. They are polled in one rotating cycle and survive a restart. Watches can be **renamed** and given a **short description** ("mit figyel") — shown as a second line under each watch name, or auto-generated from the filters when left empty.
 * **Local minimum price:** a per-watch threshold applied *after* download, so it filters without giving up the Vinted-side price range.
 * **Smart de-duplication:** an item is only reported the first time it is seen; later sightings just bump a counter. Price drops on already-known items are logged separately.
 * **Anti-Bot Resiliency:** randomized delay intervals (*jitter*), a real browser user agent and `selenium-stealth` to prevent IP rate-limiting.
 * **Result table:** every found item appears in the GUI as it arrives, with a double-click to open it on Vinted. The table is capped at 400 rows and re-loadable from the database.
 * **Desktop notifications:** an optional beep and immediate table row per new item, independent of Discord.
-* **Scrollable, rearranged layout:** panels for filters, watches and results can be dragged by their `⠿` grips into any order and collapsed with `▾`; the log docks right, left, bottom or hidden. The arrangement is saved and restored on the next start, and the window itself scrolls when it is too small for the content.
+* **Scrollable, rearranged layout:** panels for filters, watches and results can be dragged by their `⠿` grips into any order and collapsed with `▾`; the log docks right, left, bottom or hidden. The results table can be **swapped into the tall right column** ("⇄ jobbra") so far more rows are visible at once. The arrangement is saved and restored on the next start, and the window itself scrolls when it is too small for the content.
 
 ---
 
@@ -188,7 +188,8 @@ A **Kész** gomb — és az ablak X-e — azonnal elment, szerkesztés közben p
 * **Görgethető lap:** ha az ablak kisebb a tartalomnál, a jobb szélen megjelenik a görgetősáv (a görgő is működik). A napló és a találati táblázat maguk görgetnek, felettük a lap nem „csúszik kettőzve”.
 * **Panelek átrendezése:** a kereső, a figyelések és a találatok kártyáinak fejlécét a `⠿` fogantyúnál megfogva húzd a kívánt helyre — a kék vonal mutatja, hová esik. A `▾` gombbal bármelyik panel összecsukható.
 * **Napló dokkolása:** a napló fejlécének `⇄` menüjéből választható: jobbra, balra, alulra, vagy elrejtve (a `Ctrl+L` az elrejtést/visszaállítást váltja). Ugyanitt az „Elrendezés visszaállítása” az alapértelmezettre állítja vissza a sorrendet.
-* **Emlékezet:** a panel-sorrendet, az összecsukott állapotot és a napló helyét a program a `settings.db`-ben tárolja, tehát a következő indításkor ugyanígy nyílik meg.
+* **Találatok ⇄ napló:** a találatok kártyájának `⇄ jobbra` gombjával a találati táblázat átkerül a jobb oldali, teljes magasságú oszlopba, a napló pedig alulra — így sokkal több találat látszik egyszerre. A `⇄ vissza` gombbal (vagy a napló `⇄` menüjének „Találatok ⇄ napló” pontjával) visszahelyezhető a bal oldali listába.
+* **Emlékezet:** a panel-sorrendet, az összecsukott állapotot, a napló helyét és a találatok (jobb oszlopban / listában) helyét a program a `settings.db`-ben tárolja, tehát a következő indításkor ugyanígy nyílik meg.
 
 ### Billentyűparancsok
 

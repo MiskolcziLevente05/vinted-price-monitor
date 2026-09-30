@@ -17,7 +17,7 @@ import webbrowser
 import tkinter as tk
 from tkinter import ttk
 from tkinter import (
-    X, Y, BOTH, LEFT, RIGHT, TOP, BOTTOM, END, W, S, NW, CENTER,
+    X, Y, BOTH, LEFT, RIGHT, TOP, BOTTOM, END, W, E, S, NW, CENTER,
     Canvas, Toplevel, Scrollbar, Text, StringVar, BooleanVar, IntVar,
     messagebox,
 )
@@ -816,6 +816,87 @@ class ResultsPanel:
                      when=(r.get("first_seen") or "")[-8:], is_new=False)
 
 
+class WatchDialog(Toplevel):
+    """A figyelés nevének és rövid leírásának beállítása.
+
+    A szűrők már a fő űrlapból jönnek; itt csak az azonosítás és a
+    leírás kérdezhető meg. Mentéskor a callback megkapja a nevet és a
+    leírást, a lemondás a `on_cancel`-t hívja (ha meg van adva).
+    """
+
+    def __init__(self, master, title, name, desc, info, on_save,
+                 on_cancel=None):
+        super().__init__(master)
+        self._on_save = on_save
+        self._on_cancel = on_cancel
+        self.title(title)
+        self.configure(bg=CARD)
+        self.resizable(False, False)
+        self.transient(master)
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.grab_set()
+
+        ctx = tk.Frame(self, bg=CARD, padx=24, pady=18)
+        ctx.pack(fill=BOTH, expand=True)
+
+        ttk.Label(ctx, text=title, style="SectionTitle.TLabel",
+                  anchor=W).pack(fill=X)
+        if info:
+            ttk.Label(ctx, text=info, style="Muted.TLabel", anchor=W,
+                      wraplength=400, justify=LEFT).pack(fill=X, pady=(4, 12))
+
+        ttk.Label(ctx, text="Név", style="Field.TLabel").pack(anchor=W)
+        self.name_var = StringVar(value=name or "")
+        self.name_entry = ttk.Entry(ctx, textvariable=self.name_var)
+        self.name_entry.pack(fill=X, pady=(2, 12))
+
+        ttk.Label(ctx, text="Leírás (mit figyel)", style="Field.TLabel").pack(anchor=W)
+        self.desc_var = StringVar(value=desc or "")
+        ttk.Entry(ctx, textvariable=self.desc_var).pack(fill=X, pady=(2, 4))
+        ttk.Label(ctx, text="Ez jelenik meg a figyelés-lista második sorában.",
+                  style="Muted.TLabel", anchor=W).pack(fill=X)
+        ttk.Label(ctx, text="Ha üresen hagyod, a szűrőkből generálódik.",
+                  style="Muted.TLabel", anchor=W).pack(fill=X, pady=(0, 4))
+
+        btns = tk.Frame(ctx, bg=CARD)
+        btns.pack(fill=X, pady=(14, 0))
+        self.save_btn = ttk.Button(btns, text="Mentés", style="Accent.TButton",
+                                   command=self._save)
+        self.save_btn.pack(side=RIGHT)
+        ttk.Button(btns, text="Mégse", style="Ghost.TButton",
+                   command=self._cancel).pack(side=RIGHT, padx=(0, 8))
+
+        self.bind("<Return>", lambda _e: self._save())
+        self.bind("<Escape>", lambda _e: self._cancel())
+
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = master.winfo_rootx() + (master.winfo_width() - w) // 2
+        y = master.winfo_rooty() + (master.winfo_height() - h) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        self.name_entry.focus_set()
+        self.name_entry.select_range(0, "end")
+
+    def _save(self):
+        cb, self._on_save = self._on_save, None
+        if cb:
+            cb(self.name_var.get().strip(), self.desc_var.get().strip())
+        self._done()
+
+    def _cancel(self):
+        cb, self._on_cancel = self._on_cancel, None
+        if cb:
+            cb()
+        self._done()
+
+    def _done(self):
+        try:
+            if self.winfo_exists():
+                self.destroy()
+        except tk.TclError:
+            pass
+
+
 class Panel(tk.Frame):
     """Újrarendezhető és összecsukható kártya.
 
@@ -948,9 +1029,12 @@ class VintedMonitorGUI:
         self._drag = None
         self._drag_line = None
         self._fitting = False
-        self._order, self._collapsed_panels, dock = self._load_layout()
+        self._order, self._collapsed_panels, dock, side = self._load_layout()
         self._log_dock = self._last_dock = dock
         self._dock_var.set(dock)
+        self._results_side = side       # a találatok a jobb oldali oszlopban
+        self._results_side_var = BooleanVar(value=side)
+        self._results_col = None        # a jobb oldali találati oszlop
 
         self.selected = {"catalog": []}
         self.filter_options = {}
@@ -1068,7 +1152,8 @@ class VintedMonitorGUI:
         dock = data.get("log")
         if dock not in LOG_DOCKS:
             dock = "right"
-        return order, collapsed, dock
+        side = data.get("results") == "side"
+        return order, collapsed, dock, side
 
     def _save_layout(self):
         save_setting(LAYOUT_KEY, json.dumps({
@@ -1076,11 +1161,16 @@ class VintedMonitorGUI:
             "collapsed": sorted(k for k, p in self._panels.items()
                                 if p._collapsed),
             "log": self._log_dock,
+            "results": "side" if self._results_side else "stack",
         }, ensure_ascii=False))
 
     def _reset_layout(self):
         """Visszaállítás az alapértelmezett sorrendre és dokkolásra."""
-        self._panel_order = list(self.PANEL_KEYS)
+        self._results_side = False
+        self._results_side_var.set(False)
+        self._apply_results_mode()
+        self._order = list(self.PANEL_KEYS)
+        self._panel_order = [k for k in self._order if k in self._panels]
         for panel in self._panels.values():
             panel.set_collapsed(False)
             panel.release_height()
@@ -1090,6 +1180,7 @@ class VintedMonitorGUI:
         self._apply_log_dock()
         self._save_layout()
         self._log("[dim] Elrendezés visszaállítva az alapértelmezettre.")
+        self.reload_results()
 
     def _apply_panel_order(self):
         panels = [self._panels[k] for k in self._panel_order if k in self._panels]
@@ -1143,6 +1234,11 @@ class VintedMonitorGUI:
         order.pop(current)
         order.insert(index - 1 if index > current else index, key)
         self._panel_order = order
+        # a "results" a side-módban nincs a sorban — a kanonikus elrendezés
+        # (self._order) viszont mindig megtartja, hogy visszatéréskor
+        # ugyanide kerüljön
+        self._order = list(order) + [k for k in self._order
+                                     if k not in order]
         self._apply_panel_order()
         self._save_layout()
         labels = {"search": "szűrők", "watches": "figyelések",
@@ -1184,6 +1280,9 @@ class VintedMonitorGUI:
                 label=label, variable=self._dock_var, value=value,
                 command=self._set_log_dock)
         self.dock_menu.add_separator()
+        self.dock_menu.add_checkbutton(
+            label="Találatok ⇄ napló (jobbra)",
+            variable=self._results_side_var, command=self._results_side_from_var)
         self.dock_menu.add_command(
             label="Elrendezés visszaállítása", command=self._reset_layout)
         self.dock_btn.configure(menu=self.dock_menu)
@@ -1204,29 +1303,92 @@ class VintedMonitorGUI:
         self._log(f"[dim] A napló most {names.get(dock, dock)} van dokkolva.")
 
     def _apply_log_dock(self):
-        for widget in (self.log_col, self.log_rail, self.canvas_area):
+        widgets = [self.log_col, self.log_rail, self.canvas_area]
+        if self._results_col is not None:
+            widgets.append(self._results_col)
+        for widget in widgets:
             try:
                 widget.pack_forget()
             except tk.TclError:
                 pass
 
         dock = self._log_dock
+        if self._results_side:
+            # a jobb oszlop a találatoké, a napló nem fér el mellette oldalt
+            if dock in ("right", "left"):
+                dock = "bottom"
         if dock == "hidden":
             self.log_rail.pack(side=RIGHT, fill=Y)
-            self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
         elif dock == "bottom":
             self.log_col.configure(width=1, height=LOG_H)
             self.log_col.pack(side=BOTTOM, fill=X, pady=(0, 12))
-            self.canvas_area.pack(side=TOP, fill=BOTH, expand=True)
         elif dock == "left":
             self.log_col.configure(width=LOG_W, height=1)
             self.log_col.pack(side=LEFT, fill=Y, padx=(0, 12))
-            self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
         else:                                       # right
             self.log_col.configure(width=LOG_W, height=1)
             self.log_col.pack(side=RIGHT, fill=Y, padx=(12, 0))
-            self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
+
+        if self._results_side and self._results_col is not None:
+            # a találati oszlop a jobb szélre, a vászon a maradékba
+            self._results_col.pack(side=RIGHT, fill=Y, padx=(12, 12))
+        self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
         self._layout_changed()
+
+    # ── Találatok ⇄ napló ──────────────────────────────────────────────────
+
+    def _results_side_from_var(self):
+        """A dokk-menü checkbutton-jából — a változó már átbillent."""
+        if self._closing:
+            return
+        self._set_results_side(bool(self._results_side_var.get()))
+
+    def toggle_results_side(self):
+        """Fejléc-gomb: a találatok átkerülnek a jobb (magas) oszlopba."""
+        self._set_results_side(not self._results_side)
+
+    def _set_results_side(self, side):
+        if side == self._results_side:
+            self._results_side_var.set(side)   # csak szinkron
+            return
+        self._results_side = side
+        self._results_side_var.set(side)
+        self._apply_results_mode()
+        self._save_layout()
+        where = "jobbra helyezve (a napló alulra került)." if side \
+            else "visszahelyezve a bal oldali listába."
+        self._log(f"[dim] Találatok {where}")
+        self.reload_results()
+
+    def _apply_results_mode(self):
+        """A találati kártya újraépítése a jelenlegi mód szerint."""
+        # — lebontás —
+        panel = self._panels.pop("results", None)
+        if panel is not None:
+            try:
+                panel.destroy()
+            except tk.TclError:
+                pass
+        if self._results_col is not None:
+            for child in list(self._results_col.winfo_children()):
+                try:
+                    child.destroy()
+                except tk.TclError:
+                    pass
+        self.results = None
+        self.result_count = None
+        self.swap_btn = None
+        self._panel_order = [k for k in self._panel_order if k in self._panels]
+
+        # — építés a célhelyre —
+        if self._results_side:
+            self._build_results_side_card()
+        else:
+            self._build_results_card()
+            self._panel_order = [k for k in self._order if k in self._panels]
+
+        self._apply_panel_order()
+        self._apply_log_dock()
 
     def _build_ui(self):
         header = tk.Frame(self.root, bg=HEADER_BG)
@@ -1255,6 +1417,8 @@ class VintedMonitorGUI:
         self.log_col.pack_propagate(False)
         self.log_rail = tk.Frame(page, bg=BG, width=LOG_HINT)
         self.log_rail.pack_propagate(False)
+        self._results_col = tk.Frame(page, bg=BG, width=LOG_W)
+        self._results_col.pack_propagate(False)
 
         self.canvas_area = tk.Frame(page, bg=BG)
         self._build_scroll_area()
@@ -1265,11 +1429,17 @@ class VintedMonitorGUI:
 
         self._build_search_card()
         self._build_watch_card()
-        self._build_results_card()
         self._build_log_panel()
         self._build_rail()
 
-        self._panel_order = list(self._order)
+        # a találatok a mentett elrendezés szerint: a bal oldali sorba
+        # (Panel), vagy a jobb, teljes magasságú oszlopba
+        if self._results_side:
+            self._build_results_side_card()
+        else:
+            self._build_results_card()
+
+        self._panel_order = [k for k in self._order if k in self._panels]
         self._apply_panel_order()
         for key in self._collapsed_panels:
             panel = self._panels.get(key)
@@ -1546,32 +1716,52 @@ class VintedMonitorGUI:
             self.watch_empty.pack(fill=X, pady=(2, 0))
             return
 
+        wrap = max(200, self.watch_box.winfo_width() - 24)
         for idx, w in enumerate(self.watches):
             row = tk.Frame(self.watch_box, bg=CARD)
-            row.pack(fill=X, pady=2)
-            if idx == self._editing:
-                row.configure(bg=ACCENT_LT)
-            name = tk.Label(row, text=w["name"], bg=row.cget("bg"), fg=TEXT,
-                            font=(FONT, 10, "bold"), width=22, anchor=W)
-            name.pack(side=LEFT)
-            detail = (f"{w['pages']} oldal · min. {int(w['min_price'])} Ft"
-                      + ("" if w["discord"] else " · discord: ki"))
-            tk.Label(row, text=detail, bg=row.cget("bg"), fg=MUTED,
-                     font=(FONT, 9), anchor=W).pack(side=LEFT, fill=X,
-                                                    expand=True, padx=(8, 0))
-            ttk.Button(row, text="✎", style="Link.TButton", width=3,
-                       command=lambda i=idx: self.edit_watch(i)).pack(side=RIGHT)
-            ttk.Button(row, text="✕", style="Link.TButton", width=3,
+            row.pack(fill=X, pady=3)
+            bg = ACCENT_LT if idx == self._editing else CARD
+
+            top = tk.Frame(row, bg=bg)
+            top.pack(fill=X)
+            ttk.Button(top, text="✕", style="Link.TButton", width=3,
                        command=lambda i=idx: self.remove_watch(i)).pack(side=RIGHT)
+            ttk.Button(top, text="✎", style="Link.TButton", width=3,
+                       command=lambda i=idx: self.edit_watch(i)).pack(side=RIGHT)
+            tk.Label(top, text=w["name"], bg=bg, fg=TEXT,
+                     font=(FONT, 10, "bold"), anchor=W).pack(
+                side=LEFT, fill=X, expand=True)
+            detail_bits = [f"{w.get('pages') or 1} oldal",
+                           f"min. {int(w.get('min_price') or 0)} Ft"]
+            if not w.get("discord"):
+                detail_bits.append("discord: ki")
+            tk.Label(top, text=" · ".join(detail_bits), bg=bg, fg=MUTED,
+                     font=(FONT, 9), anchor=E).pack(side=RIGHT, padx=(8, 0))
+
+            desc = (w.get("desc") or "").strip()
+            if not desc:
+                desc = self._describe_filters(w) or "nem szűrt keresés"
+            tk.Label(row, text=desc, bg=bg, fg=MUTED, font=(FONT, 9),
+                     anchor=W, justify=LEFT, wraplength=wrap).pack(
+                fill=X, pady=(1, 4), padx=2)
 
     def add_watch(self):
         params = self._collect_params()
         if not params:
             self._log("[warn] Nincs szűrő kiválasztva — adj meg legalább egyet.")
             return
-        name = self._next_watch_name()
+        summary = self._form_summary_text()
+        WatchDialog(
+            self.root, "Új figyelés",
+            self._next_watch_name(), summary,
+            info="Elmentésre kerül: " + summary,
+            on_save=lambda name, desc: self._finish_add(params, name, desc))
+
+    def _finish_add(self, params, name, desc):
+        name = name or self._next_watch_name()
         watch = {
             "name": name,
+            "desc": desc,
             "params": params,
             "url": build_search_url(params),
             "min_price": self._read_min_price(),
@@ -1585,6 +1775,8 @@ class VintedMonitorGUI:
         self._save_watches()
         self._log(f"[ok] Figyelés hozzáadva: „{name}” — {watch['pages']} oldal, "
                   f"min. {int(watch['min_price'])} Ft")
+        if watch["desc"]:
+            self._log(f"[dim] Leírás: {watch['desc']}")
 
     def edit_watch(self, idx):
         if not (0 <= idx < len(self.watches)):
@@ -1595,10 +1787,43 @@ class VintedMonitorGUI:
         self.min_price_var.set(str(int(w["min_price"])))
         self.pages_var.set(w["pages"])
         self._render_watches()
-        self._log(f"[i] „{w['name']}” szerkesztése — a módosítások mentéskor "
-                  "érvényesek lesznek.")
-        self._log("[dim] Szerkesztés után nyomd meg a „+ Hozzáadás” gombot a "
-                  "frissítéshez, vagy töröld a figyelést.")
+        self._log(f"[i] „{w['name']}” szerkesztése — "
+                  "a szűrők az űrlapba lettek betöltve.")
+        summary = self._form_summary_text()
+        WatchDialog(
+            self.root, "Figyelés szerkesztése",
+            w.get("name") or "", w.get("desc") or "",
+            info="A mentéskor ez kerül elmentésre: " + summary,
+            on_save=lambda name, desc: self._finish_edit(idx, name, desc),
+            on_cancel=self._cancel_edit)
+
+    def _cancel_edit(self):
+        self._editing = None
+        self._render_watches()
+
+    def _finish_edit(self, idx, name, desc):
+        if not (0 <= idx < len(self.watches)):
+            return
+        w = self.watches[idx]
+        params = self._collect_params()
+        if not params:
+            params = w.get("params") or {}
+        w.update({
+            "name": name or w["name"],
+            "desc": desc,
+            "params": params,
+            "url": build_search_url(params),
+            "min_price": self._read_min_price(),
+            "pages": self._read_pages(),
+            "discord": self.discord_var.get(),
+            "desktop": self.desktop_var.get(),
+        })
+        self._editing = None
+        self._render_watches()
+        self._save_watches()
+        self._log(f"[ok] Figyelés frissítve: „{w['name']}”")
+        if w["desc"]:
+            self._log(f"[dim] Leírás: {w['desc']}")
 
     def remove_watch(self, idx):
         if not (0 <= idx < len(self.watches)):
@@ -1620,12 +1845,98 @@ class VintedMonitorGUI:
     def _next_watch_name(self):
         return f"Figyelés {len(self.watches) + 1}"
 
+    # ── Leírás-generálás ────────────────────────────────────────────────────
+
+    _PARAM_KEYS = ("search_text", "order", "price_from", "price_to",
+                   "discount", "favourite", "handicraft", "give_away")
+
+    def _price_range_text(self, params):
+        def fmt(value):
+            try:
+                return f"{int(float(value)):,}".replace(",", " ")
+            except (TypeError, ValueError):
+                return str(value)
+        frm = (params.get("price_from") or "").strip()
+        to = (params.get("price_to") or "").strip()
+        if frm and to:
+            return f"{fmt(frm)}–{fmt(to)} Ft"
+        if frm:
+            return f"min. {fmt(frm)} Ft"
+        if to:
+            return f"max. {fmt(to)} Ft"
+        return ""
+
+    def _describe_filters(self, watch):
+        """A szűrők rövid összefoglalója (a leírás sora, ha nincs saját)."""
+        p = watch.get("params") or {}
+        parts = []
+        kw = (p.get("search_text") or "").strip()
+        if kw:
+            parts.append(f"„{kw}”")
+        price = self._price_range_text(p)
+        if price:
+            parts.append(price)
+        n = sum(len(v) for k, v in p.items()
+                if k not in self._PARAM_KEYS
+                and isinstance(v, (list, tuple)))
+        if n:
+            parts.append(f"{n} szűrő")
+        extras = []
+        for key, label in (("discount", "kedvezmény"), ("favourite", "kedvenc"),
+                           ("handicraft", "kézműves"), ("give_away", "ajándék")):
+            if p.get(key):
+                extras.append(label)
+        if extras:
+            parts.append(" + ".join(extras))
+        return " · ".join(parts)
+
+    def _describe_watch(self, watch):
+        """Teljes összefoglaló: szűrők + oldalak + min. ár + értesítések."""
+        base = self._describe_filters(watch)
+        parts = [base] if base else []
+        parts.append(f"{watch.get('pages') or 1} oldal")
+        if watch.get("min_price"):
+            parts.append(f"min. {int(watch['min_price'])} Ft")
+        if watch.get("discord"):
+            parts.append("Discord")
+        if watch.get("desktop"):
+            parts.append("asztali jelzés")
+        return " · ".join(parts)
+
+    def _form_summary_text(self):
+        """A fő űrlap pillanatnyi tartalomjegyzéke a párbeszédhez."""
+        return self._describe_watch({
+            "params": self._collect_params() or {},
+            "min_price": self._read_min_price(),
+            "pages": self._read_pages(),
+            "discord": self.discord_var.get(),
+            "desktop": self.desktop_var.get(),
+        })
+
     # ── Results card ────────────────────────────────────────────────────────
 
     def _build_results_card(self):
         card = self._add_panel("results", "Találatok")
-        body = card.body
-        head = card.header
+        self._build_results_header(card.header, self._swap_btn_label())
+        self._build_results_body(card.body)
+
+    def _build_results_side_card(self):
+        """A találatok a jobb oldali, teljes magasságú oszlopban."""
+        card = self._card(self._results_col)
+        card.pack(fill=BOTH, expand=True)
+        head = tk.Frame(card, bg=CARD)
+        head.pack(fill=X, padx=16, pady=(12, 0))
+        tk.Label(head, text="TALÁLATOK", bg=CARD, fg=ACCENT_DK,
+                 font=(FONT, 10, "bold")).pack(side=LEFT)
+        body = tk.Frame(card, bg=CARD, padx=16, pady=12)
+        body.pack(fill=BOTH, expand=True)
+        self._build_results_header(head, self._swap_btn_label())
+        self._build_results_body(body)
+
+    def _swap_btn_label(self):
+        return "⇄ vissza" if self._results_side else "⇄ jobbra"
+
+    def _build_results_header(self, head, swap_label):
         self.result_count = tk.Label(head, text="0 sor", bg=CARD, fg=MUTED,
                                      font=(FONT, 9))
         self.result_count.pack(side=RIGHT, padx=(0, 6))
@@ -1633,7 +1944,11 @@ class VintedMonitorGUI:
                    command=self.reload_results).pack(side=RIGHT)
         ttk.Button(head, text="Ürítés", style="Link.TButton",
                    command=self._clear_results).pack(side=RIGHT, padx=(0, 6))
+        self.swap_btn = ttk.Button(head, text=swap_label, style="Link.TButton",
+                                   command=self.toggle_results_side)
+        self.swap_btn.pack(side=RIGHT, padx=(0, 6))
 
+    def _build_results_body(self, body):
         self.results = ResultsPanel(body, on_open=self._open_item)
         ttk.Label(body, text="dupla kattintás = termék megnyitása böngészőben",
                   style="Muted.TLabel", anchor=W).pack(fill=X, pady=(6, 0))
