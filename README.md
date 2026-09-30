@@ -208,10 +208,15 @@ Az alkalmazás három rétegből áll, mindegyik önálló felelősséggel:
   alatta a mentett figyelések. Egy lépésben hozzáadsz egy figyelést a lista
   címsorában lévő `＋ Új figyelés` linkkel, és nem kell nézetet váltanod, hogy
   lássad, mit mentettél.
-* **Görgetés modulonként:** a **Keresés** egyetlen görgethető lapot kap, amelyen
-  az űrlap és a figyelések is fent van (a görgetősáv csak akkor jelenik meg, ha
-  a tartalom kilóg), a **Találatok** és a **Napló** a teljes területet kitölti és
-  maga görget. A görgő felett a lapot az görgeti, ahol a widget nem görget önmaga.
+* **A figyelések listája önállóan görget:** az űrlap fix magasságú, a lista
+  kitölti alatta a maradék helyet, és **külön görgetősávon** érhető el benne a
+  többi figyelés. Így a szűrők mindig látszanak, és egy hosszú lista nem
+  nyeli el a nézetet — a minimum ablakméretben is három figyelés látszik.
+  Csak akkor jelenik meg a sáv, ha a figyelések tényleg nem férnek bele.
+* **Görgetés modulonként:** a **Keresés** két blokkból áll (űrlap + figyelés-lista),
+  mindkettő saját görgetős lappal; a **Találatok** és a **Napló** a teljes
+  területet kitölti és maga görget. A görgő felett a lapot az görgeti, ahol a
+  widget nem görget önmaga.
 * **Nincs átalakítás-mechanika:** se húzás, se dokkolás, se összecsukás, se
   találat-váltás. Ehelyett a figyelési sorokon dupla kattintás szerkeszt, a
   jobb gomb menüt ad (Szerkesztés / Törlés).
