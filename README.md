@@ -51,7 +51,8 @@ szűrő űrlap ──► szűrő API (requests + Vinted sütik) ──► chip-e
 * **Anti-Bot Resiliency:** randomized delay intervals (*jitter*), a real browser user agent and `selenium-stealth` to prevent IP rate-limiting.
 * **Result table:** every found item appears in the GUI as it arrives, with a double-click to open it on Vinted. The table is capped at 400 rows and re-loadable from the database.
 * **Desktop notifications:** an optional beep and immediate table row per new item, independent of Discord.
-* **Scrollable, rearranged layout:** panels for filters, watches and results can be dragged by their `⠿` grips into any order and collapsed with `▾`; the log docks right, left, bottom or hidden. The results table can be **swapped into the tall right column** ("⇄ jobbra") so far more rows are visible at once. The arrangement is saved and restored on the next start, and the window itself scrolls when it is too small for the content.
+* **Scrollable, rearranged layout:** panels for filters, watches and results can be dragged by their `⠿` grips into any order and collapsed with `▾`; the log docks right, left, bottom or hidden. The results table can be **swapped into the tall right column** ("⇄ jobbra") so far more rows are visible at once. The arrangement is saved and restored on the next start, and the window itself scrolls when it is too small for the content. Sizes are **responsive**: the side column and the bottom-docked log scale with the window (with sensible minimums), and the watch descriptions re-wrap to fit.
+* **Modular, themeable UI:** the filter and watch **cards can be hidden/shown** from the `⇄` menu without losing the form state (panel visibility is persisted too). A **Modern (dark)** theme can be switched to live from the Settings window, next to the default **Classic (light)** look — every widget, the log and the result table repaint instantly, and the choice is saved.
 
 ---
 
@@ -188,10 +189,25 @@ A **Kész** gomb — és az ablak X-e — azonnal elment, szerkesztés közben p
 ### Elrendezés
 
 * **Görgethető lap:** ha az ablak kisebb a tartalomnál, a jobb szélen megjelenik a görgetősáv (a görgő is működik). A napló és a találati táblázat maguk görgetnek, felettük a lap nem „csúszik kettőzve”.
+* **Reszponzív méretek:** a napló oszlopa (oldalt dokkolva) és magassága (alul dokkolva) az ablak méretéhez igazodik — széles ablaknál szélesebb a napló, kicsinél a minimumra szorul, akkor a lap továbbra is görgethető. A figyelés-leírások tördelése követi az új szélességet.
 * **Panelek átrendezése:** a kereső, a figyelések és a találatok kártyáinak fejlécét a `⠿` fogantyúnál megfogva húzd a kívánt helyre — a kék vonal mutatja, hová esik. A `▾` gombbal bármelyik panel összecsukható.
-* **Napló dokkolása:** a napló fejlécének `⇄` menüjéből választható: jobbra, balra, alulra, vagy elrejtve (a `Ctrl+L` az elrejtést/visszaállítást váltja). Ugyanitt az „Elrendezés visszaállítása” az alapértelmezettre állítja vissza a sorrendet.
+* **Moduláris panelek:** a napló `⇄` menüjéből a **Szűrő-kártya** és a **Figyelés-kártya** ki-/bekapcsolható — a kártya eltűnik a lapról, de az állapota (pl. a kulcsszó mező tartalma) megmarad, és a döntés is mentődik.
+* **Napló dokkolása:** a napló fejlécének `⇄` menüjéből választható: jobbra, balra, alulra, vagy elrejtve (a `Ctrl+L` az elrejtést/visszaállítást váltja). Ugyanitt az „Elrendezés visszaállítása” az alapértelmezettre állítja vissza a sorrendet, a dokkolást és a látható paneleket.
 * **Találatok ⇄ napló:** a találatok kártyájának `⇄ jobbra` gombjával a találati táblázat átkerül a jobb oldali, teljes magasságú oszlopba, a napló pedig alulra — így sokkal több találat látszik egyszerre. A `⇄ vissza` gombbal (vagy a napló `⇄` menüjének „Találatok ⇄ napló” pontjával) visszahelyezhető a bal oldali listába.
-* **Emlékezet:** a panel-sorrendet, az összecsukott állapotot, a napló helyét és a találatok (jobb oszlopban / listában) helyét a program a `settings.db`-ben tárolja, tehát a következő indításkor ugyanígy nyílik meg.
+* **Emlékezet:** a panel-sorrendet, az összecsukott állapotot, a napló helyét, a találatok (jobb oszlopban / listában) helyét és a rejtett paneleket a program a `settings.db`-ben tárolja, tehát a következő indításkor ugyanígy nyílik meg.
+
+### Megjelenés (témák)
+
+A **Beállítások** ablak „Megjelenés” sorában két téma közül választhatsz —
+a váltás azonnal, újraindítás nélkül érvényesül, és mentődik:
+
+| Téma | Jellemzők |
+|------|-----------|
+| **Klasszikus (világos)** | az alapértelmezett, világos kártyákkal és türkiz akcentussal |
+| **Modern (sötét)** | sötét, lapos megjelenés kék akcentussal; a napló, a találati tábla és minden kártya átfestődik |
+
+A színek moduláris palettából épülnek fel (`THEMES`), így egy új téma
+hozzáadása a jövőben egyetlen szótár-bejegyzés.
 
 ### Billentyűparancsok
 

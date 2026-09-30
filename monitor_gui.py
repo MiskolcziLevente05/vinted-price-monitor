@@ -45,31 +45,98 @@ from monitor import (
     Watch,
 )
 
-# ─── Palette ─────────────────────────────────────────────────────────────────
-BG          = "#EAF0F5"
-CARD        = "#FFFFFF"
-BORDER      = "#DFE6EE"
-TEXT        = "#172033"
-MUTED       = "#6B778C"
-ACCENT      = "#09B1BA"
-ACCENT_DK   = "#07868E"
-ACCENT_LT   = "#E3F8F9"
-HEADER_BG   = "#0C1A2A"
-HEADER_SUB  = "#9FB2C5"
-GREEN       = "#12A150"
-GREEN_LT    = "#E4F7ED"
-AMBER       = "#C87A08"
-AMBER_LT    = "#FDF1DC"
-RED         = "#D13537"
-RED_LT      = "#FCEBEB"
-GRID_BG     = "#F2F5F8"
+# ─── Palette & themes ────────────────────────────────────────────────────────
+# A színek témákból (modulokból) épülnek fel; a modulszintű konstansok
+# (BG, CARD, ...) mindig az ÉPPEN AKTÍV téma értékeit tartják, így a
+# widget-építők és a `UI` stílusai egységesen követik a váltást. Élő váltás
+# a `VintedMonitorGUI.apply_theme()` által: paletta-átfestés + stílus-újraépítés.
+
+PALETTE_KEYS = (
+    "BG", "CARD", "BORDER", "TEXT", "MUTED",
+    "ACCENT", "ACCENT_DK", "ACCENT_LT",
+    "HEADER_BG", "HEADER_SUB",
+    "GREEN", "GREEN_LT", "AMBER", "AMBER_LT", "RED", "RED_LT", "GRID_BG",
+    "GRIP", "ROW_ODD",
+    "ACCENT_DISABLED", "GHOST_DISABLED", "SOFT_ACTIVE", "SOFT_PRESSED",
+)
+
+THEMES = {
+    "klasszikus": {
+        "label": "Klasszikus (világos)",
+        "BG": "#EAF0F5", "CARD": "#FFFFFF", "BORDER": "#DFE6EE",
+        "TEXT": "#172033", "MUTED": "#6B778C",
+        "ACCENT": "#09B1BA", "ACCENT_DK": "#07868E", "ACCENT_LT": "#E3F8F9",
+        "HEADER_BG": "#0C1A2A", "HEADER_SUB": "#9FB2C5",
+        "GREEN": "#12A150", "GREEN_LT": "#E4F7ED",
+        "AMBER": "#C87A08", "AMBER_LT": "#FDF1DC",
+        "RED": "#D13537", "RED_LT": "#FCEBEB", "GRID_BG": "#F2F5F8",
+        "GRIP": "#AFBCCB", "ROW_ODD": "#FAFCFD",
+        "ACCENT_DISABLED": "#B7E2E4", "GHOST_DISABLED": "#AFC6C8",
+        "SOFT_ACTIVE": "#E3EAF1", "SOFT_PRESSED": "#DCE4EC",
+    },
+    "modern": {
+        "label": "Modern (sötét)",
+        "BG": "#0E1116", "CARD": "#171C24", "BORDER": "#2A3340",
+        "TEXT": "#E7ECF3", "MUTED": "#8B98A9",
+        "ACCENT": "#4F8CFF", "ACCENT_DK": "#7AA4FF", "ACCENT_LT": "#1E2A3E",
+        "HEADER_BG": "#0A0D12", "HEADER_SUB": "#7E8CA0",
+        "GREEN": "#3DDC84", "GREEN_LT": "#12301F",
+        "AMBER": "#F5B84C", "AMBER_LT": "#33280E",
+        "RED": "#FF6B6B", "RED_LT": "#3A1B1E", "GRID_BG": "#1B222C",
+        "GRIP": "#5D6B7E", "ROW_ODD": "#1D242F",
+        "ACCENT_DISABLED": "#242D3B", "GHOST_DISABLED": "#566176",
+        "SOFT_ACTIVE": "#232B37", "SOFT_PRESSED": "#1C232E",
+    },
+}
+
+
+def _apply_palette(name):
+    """A modulszintű színkonstansok beállítása a megadott témára."""
+    for key, value in THEMES.get(name, THEMES["klasszikus"]).items():
+        globals()[key] = value
+
+
+# Alapértelmezett paletta importkor is (a GUI a mentett témát indításkor
+# tölti be, de a modulszintű használathoz legyen mindig érték).
+_apply_palette("klasszikus")
+
+
+def _recolor_widgets(widget, old_map):
+    """Egy widget-fa átfestése a téma-váltáskor.
+
+    A `Tk` widgetek építéskor beszúrt (a régi palettából vett) színeit
+    cseréljük az új paletta megfelelő értékeire; a `ttk` widgeteket a stílus
+    újraépítése festi át (a Treeview-t külön, a ResultsPanel kezeli).
+    """
+    try:
+        if isinstance(widget, ttk.Widget):
+            for child in widget.winfo_children():
+                _recolor_widgets(child, old_map)
+            return
+        cls = widget.winfo_class()
+    except tk.TclError:
+        return
+    for opt in ("background", "foreground", "highlightbackground",
+                "troughcolor", "activebackground"):
+        try:
+            value = widget.cget(opt)
+            key = str(value).lower()
+            if key in old_map:
+                widget.configure(**{opt: old_map[key]})
+        except tk.TclError:
+            pass
+    for child in widget.winfo_children():
+        _recolor_widgets(child, old_map)
+
 
 FONT  = "Segoe UI"
 F_MAIN = FONT
 
-LOG_W = 380      # napló panel szélessége (oldalt dokkolva)
-LOG_H = 250      # napló panel magassága (alul dokkolva)
-LOG_HINT = 60    # rail szélesség összecsukva
+# Az oldalméret-állandók helyett az ablakmérethez igazodó, válaszos
+# méreteket használunk (lásd `_layout_dims`); ezek a határok:
+MIN_SIDE_W, MAX_SIDE_W = 300, 470
+MIN_LOG_H, MAX_LOG_H = 170, 340
+MIN_RAIL_W, MAX_RAIL_W = 48, 72
 
 LOG_DOCKS = ("right", "left", "bottom", "hidden")
 
@@ -93,14 +160,14 @@ LAYOUT_KEY = "layout"
 
 
 class UI:
-    """Shared ttk styles applied once per app."""
-    _done = False
+    """Shared ttk styles.
+
+    Újra/újrahívható: egy téma-váltás a paletta módosítása után újra
+    hívja `init`-et, és minden ttk widget azonnal az új stílusokkal rajzol.
+    """
 
     @classmethod
     def init(cls, root):
-        if cls._done:
-            return
-        cls._done = True
         style = ttk.Style(root)
         try:
             style.theme_use("clam")
@@ -146,7 +213,7 @@ class UI:
                         font=(FONT, 11, "bold"))
         style.map("Accent.TButton",
                   background=[("pressed", ACCENT_DK), ("active", ACCENT_DK),
-                              ("disabled", "#B7E2E4")])
+                              ("disabled", ACCENT_DISABLED)])
 
         style.configure("Stop.TButton", background=RED, foreground="#FFFFFF",
                         bordercolor=RED, focusthickness=0, padding=(22, 11),
@@ -159,13 +226,13 @@ class UI:
                         font=(FONT, 10))
         style.map("Ghost.TButton",
                   background=[("pressed", ACCENT_LT), ("active", ACCENT_LT)],
-                  foreground=[("disabled", "#AFC6C8")])
+                  foreground=[("disabled", GHOST_DISABLED)])
 
         style.configure("Soft.TButton", background=BG, foreground=TEXT,
                         bordercolor=BORDER, focusthickness=0, padding=(12, 7),
                         font=(FONT, 10))
         style.map("Soft.TButton",
-                  background=[("pressed", "#DCE4EC"), ("active", "#E3EAF1")])
+                  background=[("pressed", SOFT_PRESSED), ("active", SOFT_ACTIVE)])
 
         style.configure("Link.TButton", background=CARD, foreground=ACCENT_DK,
                         bordercolor=BORDER, focusthickness=0, padding=(8, 4),
@@ -219,7 +286,7 @@ class SettingsWindow(Toplevel):
         self.gui = gui
         self.title("Beállítások")
         self.configure(bg=CARD)
-        self.geometry("520x600")
+        self.geometry("520x660")
         self.resizable(False, False)
         self.transient(master)
         # X-s bezárás is mentsen, nem csak a 'Kész' gomb
@@ -279,6 +346,23 @@ class SettingsWindow(Toplevel):
         tk.Label(row_m, text="db (a többi összefoglalóként megy)", bg=CARD,
                  fg=MUTED, font=(FONT, 9)).pack(side=LEFT)
 
+        tk.Frame(body, bg=BORDER, height=1).pack(fill=X, pady=(16, 0))
+
+        row_th = tk.Frame(body, bg=CARD)
+        row_th.pack(fill=X, pady=(12, 0))
+        tk.Label(row_th, text="Megjelenés", bg=CARD, fg=TEXT,
+                 font=(FONT, 9)).pack(side=LEFT, padx=(0, 14))
+        ttk.Radiobutton(row_th, text="Klasszikus (világos)",
+                        value="klasszikus", variable=self.gui.theme_var,
+                        command=self._apply_theme).pack(side=LEFT)
+        ttk.Radiobutton(row_th, text="Modern (sötét)",
+                        value="modern", variable=self.gui.theme_var,
+                        command=self._apply_theme).pack(side=LEFT, padx=(14, 0))
+        self.theme_status = tk.Label(body, text="A modern téma sötét, lapos "
+                                      "megjelenés; azonnal érvényesül.",
+                                     bg=CARD, fg=MUTED, font=(FONT, 9), anchor=W)
+        self.theme_status.pack(fill=X, pady=(4, 0))
+
         info = tk.Frame(body, bg=ACCENT_LT, highlightbackground=ACCENT,
                         highlightthickness=1)
         info.pack(fill=X, pady=(16, 0))
@@ -306,6 +390,12 @@ class SettingsWindow(Toplevel):
                 text=msg, fg=GREEN if ok else RED))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_theme(self):
+        """A rádiógomb-választás azonnal érvényesül a főablakon."""
+        name = self.gui.theme_var.get()
+        if name in THEMES:
+            self.gui.apply_theme(name)
 
     def _close(self):
         """A 'Kész' gomb és az X is azonnal kiírja a webhookot."""
@@ -760,10 +850,23 @@ class ResultsPanel:
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side=RIGHT, fill=Y)
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        self.tree.tag_configure("odd", background="#FAFCFD")
+        self.tree.tag_configure("odd", background=ROW_ODD)
         self.tree.tag_configure("new", foreground=GREEN)
         self.tree.bind("<Double-Button-1>", self._on_double)
         self.tree.bind("<Return>", self._on_double)
+
+    def apply_theme(self):
+        """A `ResultsPanel` színeinek frissítése téma-váltáskor.
+
+        A táblázat alapszínei a `Treeview` stílusból jönnek (ezt az
+        `UI.init` újraépíti); itt csak a keret és a tag-ek frissülnek.
+        """
+        try:
+            self.wrap.configure(bg=GRID_BG, highlightbackground=BORDER)
+            self.tree.tag_configure("odd", background=ROW_ODD)
+            self.tree.tag_configure("new", foreground=GREEN)
+        except tk.TclError:
+            pass
 
     def _on_double(self, _event=None):
         sel = self.tree.selection()
@@ -919,7 +1022,7 @@ class Panel(tk.Frame):
         self.header = tk.Frame(self, bg=CARD)
         self.header.pack(fill=X, padx=6, pady=(9, 0))
 
-        self.grip = tk.Label(self.header, text="⠿", bg=CARD, fg="#AFBCCB",
+        self.grip = tk.Label(self.header, text="⠿", bg=CARD, fg=GRIP,
                              font=(FONT, 13), cursor="fleur", padx=3)
         self.grip.pack(side=LEFT)
 
@@ -1002,8 +1105,17 @@ class Panel(tk.Frame):
 
 
 class VintedMonitorGUI:
+    THEME_KEY = "theme"
+
     def __init__(self, root):
         self.root = root
+        # A témát az indítás előtt töltjük be, hogy az építés már a helyes
+        # palettával menjen (nincs villanásváltás).
+        self.theme_var = StringVar(value=load_setting(self.THEME_KEY, "klasszikus")
+                                   or "klasszikus")
+        if self.theme_var.get() not in THEMES:
+            self.theme_var.set("klasszikus")
+        _apply_palette(self.theme_var.get())
         UI.init(root)
         self.root.title(f"Vinted Price Monitor — {VERSION}")
         self.root.geometry("1280x940")
@@ -1030,12 +1142,15 @@ class VintedMonitorGUI:
         self._drag = None
         self._drag_line = None
         self._fitting = False
-        self._order, self._collapsed_panels, dock, side = self._load_layout()
+        self._hidden_panels = set()
+        (self._order, self._collapsed_panels, dock, side,
+         self._hidden_panels) = self._load_layout()
         self._log_dock = self._last_dock = dock
         self._dock_var.set(dock)
         self._results_side = side       # a találatok a jobb oldali oszlopban
         self._results_side_var = BooleanVar(value=side)
         self._results_col = None        # a jobb oldali találati oszlop
+        self._panel_btns = {}           # a dokk-menü panel checkbuttonjai
 
         self.selected = {"catalog": []}
         self.filter_options = {}
@@ -1154,7 +1269,9 @@ class VintedMonitorGUI:
         if dock not in LOG_DOCKS:
             dock = "right"
         side = data.get("results") == "side"
-        return order, collapsed, dock, side
+        hidden = {k for k in data.get("hidden", [])
+                  if k in order and k in ("search", "watches")}
+        return order, collapsed, dock, side, hidden
 
     def _save_layout(self):
         save_setting(LAYOUT_KEY, json.dumps({
@@ -1163,6 +1280,7 @@ class VintedMonitorGUI:
                                 if p._collapsed),
             "log": self._log_dock,
             "results": "side" if self._results_side else "stack",
+            "hidden": sorted(self._hidden_panels),
         }, ensure_ascii=False))
 
     def _reset_layout(self):
@@ -1172,6 +1290,9 @@ class VintedMonitorGUI:
         self._apply_results_mode()
         self._order = list(self.PANEL_KEYS)
         self._panel_order = [k for k in self._order if k in self._panels]
+        self._hidden_panels = set()
+        for key, var in self._panel_btns.items():
+            var.set(True)
         for panel in self._panels.values():
             panel.set_collapsed(False)
             panel.release_height()
@@ -1184,11 +1305,13 @@ class VintedMonitorGUI:
         self.reload_results()
 
     def _apply_panel_order(self):
-        panels = [self._panels[k] for k in self._panel_order if k in self._panels]
-        for panel in panels:
+        all_panels = [self._panels[k] for k in self._panel_order
+                      if k in self._panels]
+        for panel in all_panels:
             panel.pack_forget()
-        for panel in panels:
-            panel.pack(fill=X, pady=(0, 12))
+        for key in self._panel_order:
+            if key in self._panels and key not in self._hidden_panels:
+                self._panels[key].pack(fill=X, pady=(0, 12))
         self._layout_changed()
 
     # ── Húzogatás ──────────────────────────────────────────────────────────
@@ -1207,7 +1330,8 @@ class VintedMonitorGUI:
             return
         if y is None:
             y = self.root.winfo_pointery()
-        panels = [self._panels[k] for k in self._panel_order]
+        panels = [self._panels[k] for k in self._panel_order
+                  if k in self._panels and k not in self._hidden_panels]
         index = self._drop_index(y)
         self._drag["insert"] = index
         self._drag_line.pack_forget()
@@ -1259,13 +1383,15 @@ class VintedMonitorGUI:
 
     def _drop_index(self, y):
         """Hová kerül a panel: hányadik helyre csapódna a `y` kurzorpozícióban."""
-        for index, key in enumerate(self._panel_order):
+        visible = [k for k in self._panel_order
+                   if k in self._panels and k not in self._hidden_panels]
+        for index, key in enumerate(visible):
             panel = self._panels.get(key)
             if panel is None:
                 continue
             if y < panel.winfo_rooty() + panel.winfo_height() // 2:
                 return index
-        return len(self._panel_order)
+        return len(visible)
 
     # ── A napló dokkolása ──────────────────────────────────────────────────
 
@@ -1284,10 +1410,40 @@ class VintedMonitorGUI:
         self.dock_menu.add_checkbutton(
             label="Találatok ⇄ napló (jobbra)",
             variable=self._results_side_var, command=self._results_side_from_var)
+        self.dock_menu.add_separator()
+        for key, label in (("search", "Szűrő-kártya"),
+                           ("watches", "Figyelés-kártya")):
+            var = BooleanVar(value=key not in self._hidden_panels)
+            self._panel_btns[key] = var
+            self.dock_menu.add_checkbutton(
+                label=label, variable=var,
+                command=lambda k=key: self.toggle_panel(k))
+        self.dock_menu.add_separator()
         self.dock_menu.add_command(
             label="Elrendezés visszaállítása", command=self._reset_layout)
         self.dock_btn.configure(menu=self.dock_menu)
         self.dock_btn.pack(side=RIGHT, padx=(0, 6))
+
+    def toggle_panel(self, key):
+        """Moduláris panelek: ki-/bekapcsolás adatvesztés nélkül.
+
+        A panel widgetje megmarad (a kereső-űrlap állapota is), csak
+        kilép a vászonról; a döntés a layout kulcsba mentődik.
+        """
+        if self._closing or key not in self._panels:
+            return
+        if key in self._hidden_panels:
+            self._hidden_panels.discard(key)
+        else:
+            self._hidden_panels.add(key)
+        var = self._panel_btns.get(key)
+        if var is not None:
+            var.set(key not in self._hidden_panels)
+        self._apply_panel_order()
+        self._save_layout()
+        names = {"search": "Szűrő-kártya", "watches": "Figyelés-kártya"}
+        state = "elrejtve" if key in self._hidden_panels else "megjelenítve"
+        self._log(f"[dim] {names.get(key, key)} {state}.")
 
     def _set_log_dock(self, dock=None):
         dock = dock or self._dock_var.get()
@@ -1321,13 +1477,13 @@ class VintedMonitorGUI:
         if dock == "hidden":
             self.log_rail.pack(side=RIGHT, fill=Y)
         elif dock == "bottom":
-            self.log_col.configure(width=1, height=LOG_H)
+            self.log_col.configure(width=1, height=self._log_h)
             self.log_col.pack(side=BOTTOM, fill=X, pady=(0, 12))
         elif dock == "left":
-            self.log_col.configure(width=LOG_W, height=1)
+            self.log_col.configure(width=self._side_w, height=1)
             self.log_col.pack(side=LEFT, fill=Y, padx=(0, 12))
         else:                                       # right
-            self.log_col.configure(width=LOG_W, height=1)
+            self.log_col.configure(width=self._side_w, height=1)
             self.log_col.pack(side=RIGHT, fill=Y, padx=(12, 0))
 
         if self._results_side and self._results_col is not None:
@@ -1401,7 +1557,9 @@ class VintedMonitorGUI:
         brand.pack(side=LEFT)
         dot = tk.Canvas(brand, width=14, height=14, bg=HEADER_BG,
                         highlightthickness=0)
-        dot.create_oval(2, 2, 12, 12, fill=ACCENT, outline="")
+        self._logo_dot = dot
+        self._logo_dot_id = dot.create_oval(2, 2, 12, 12, fill=ACCENT,
+                                            outline="")
         dot.pack(side=LEFT, padx=(0, 10))
         tk.Label(brand, text="VINTED PRICE MONITOR", bg=HEADER_BG, fg="#FFFFFF",
                  font=(FONT, 15, "bold")).pack(side=LEFT)
@@ -1412,13 +1570,15 @@ class VintedMonitorGUI:
         page = tk.Frame(self.root, bg=BG, padx=18)
         page.pack(fill=BOTH, expand=True, pady=(0, 12))
 
+        self._side_w, self._log_h, self._rail_w = self._layout_dims()
+
         # A napló oszlopát a dokkolás helye határozza meg; a többi felület
         # a jobb/bal szélen van, fölötte a görgethető lap.
-        self.log_col = tk.Frame(page, bg=BG, width=LOG_W)
+        self.log_col = tk.Frame(page, bg=BG, width=self._side_w)
         self.log_col.pack_propagate(False)
-        self.log_rail = tk.Frame(page, bg=BG, width=LOG_HINT)
+        self.log_rail = tk.Frame(page, bg=BG, width=self._rail_w)
         self.log_rail.pack_propagate(False)
-        self._results_col = tk.Frame(page, bg=BG, width=LOG_W)
+        self._results_col = tk.Frame(page, bg=BG, width=self._side_w)
         self._results_col.pack_propagate(False)
 
         self.canvas_area = tk.Frame(page, bg=BG)
@@ -1448,6 +1608,96 @@ class VintedMonitorGUI:
                 panel.set_collapsed(True)
         self._apply_log_dock()
         self._build_statusbar()
+
+        self._last_win = (self.root.winfo_width(), self.root.winfo_height())
+        self.root.bind("<Configure>", self._on_window_resize, add="+")
+
+    # ── Reszponzív méretezés ────────────────────────────────────────────────
+
+    def _layout_dims(self):
+        """Az ablak méretéhez igazodó oszlop-/sávméretek.
+
+        Amennyire az ablak engedi, a napló-oszlop szélesedik (30%),
+        az alul dokkolt napló magasabb lesz (27%), a rail pedig keskeny
+        marad — mindez határok közé szorítva, hogy kis ablaknál is
+        használható legyen a felület.
+        """
+        w = self.root.winfo_width() or 1280
+        h = self.root.winfo_height() or 940
+        return (
+            max(MIN_SIDE_W, min(MAX_SIDE_W, int(w * 0.30))),
+            max(MIN_LOG_H, min(MAX_LOG_H, int(h * 0.27))),
+            max(MIN_RAIL_W, min(MAX_RAIL_W, int(w * 0.055))),
+        )
+
+    def _on_window_resize(self, event):
+        if self._closing:
+            return
+        try:
+            if (event.width, event.height) == getattr(self, "_last_win", None):
+                return
+        except tk.TclError:
+            return
+        self._last_win = (event.width, event.height)
+        # elnyomott méretezés közben nem reagálunk minden pixelre
+        self._schedule(130, self._refresh_responsive)
+
+    def _refresh_responsive(self):
+        if self._closing:
+            return
+        try:
+            self._side_w, self._log_h, self._rail_w = self._layout_dims()
+        except tk.TclError:
+            return
+        self._apply_log_dock()
+        try:
+            self._fit_results(self.canvas.winfo_height())
+        except tk.TclError:
+            pass
+        self._render_watches()   # a leírás-sor tördelése az új szélességhez
+
+    # ── Megjelenés: témák ───────────────────────────────────────────────────
+
+    def apply_theme(self, name):
+        """A megjelenés élő váltása: paletta + ttk stílusok + nyitott widgetek.
+
+        Modulárisan: a színkonstansok a `THEMES`-ből töltődnek, a ttk
+        stílusokat az `UI.init` újraépíti, a már meglévő Tk widgeteket pedig
+        a `_recolor_widgets` festi át a régi paletta-értékek alapján.
+        """
+        if name not in THEMES:
+            name = "klasszikus"
+        self.theme_var.set(name)
+        old = {k: globals()[k] for k in PALETTE_KEYS}
+        _apply_palette(name)
+        UI.init(self.root)
+        # a Tk a színeket kisbetűs #rrggbb formában adja vissza; a kulcsokat
+        # ezért normalizáljuk, hogy a régi értékeket mindenképp megtaláljuk
+        old_map = {old[k].lower(): globals()[k] for k in PALETTE_KEYS}
+        _recolor_widgets(self.root, old_map)
+        self._on_theme_applied()
+        save_setting(self.THEME_KEY, name)
+        self._log(f"[dim] Megjelenés: {THEMES[name]['label']}")
+
+    def _on_theme_applied(self):
+        """A stílusokon túlmutató, kézzel színezett widgetek frissítése."""
+        try:
+            if self.results is not None:
+                self.results.apply_theme()
+        except tk.TclError:
+            pass
+        try:
+            if self.log_text is not None:
+                self.log_text.configure(bg=CARD, fg=TEXT, insertbackground=TEXT,
+                                        highlightbackground=BORDER)
+                self._setup_log_tags()
+        except tk.TclError:
+            pass
+        try:
+            if self._logo_dot_id:
+                self._logo_dot.itemconfig(self._logo_dot_id, fill=ACCENT)
+        except tk.TclError:
+            pass
 
     # ── Görgethető lap ─────────────────────────────────────────────────────
 
@@ -1544,12 +1794,16 @@ class VintedMonitorGUI:
         self._fitting = True
         try:
             used = sum(p.winfo_reqheight() for k, p in self._panels.items()
-                       if k != "results" and not p._collapsed)
+                       if k != "results" and not p._collapsed
+                       and k not in self._hidden_panels)
             budget = available - used - 16
             # A táblázat pontosan a maradék helyet kapja (min. RESULTS_MIN),
             # így alapablaknál nincs sikamlós 20-30 px-es görgetés; ha az
-            # ablak kicsi, akkor viszont a lap görgethető marad.
-            height = min(max(budget, RESULTS_MIN), RESULTS_MAX)
+            # ablak kicsi, akkor viszont a lap görgethető marad. A
+            # maximális magasság az ablakhoz igazodik (legfeljebb RESULTS_MAX).
+            win_h = self.root.winfo_height() or 940
+            max_h = max(RESULTS_MIN, min(RESULTS_MAX, int(win_h * 0.55)))
+            height = min(max(budget, RESULTS_MIN), max_h)
             if abs(height - panel.winfo_height()) >= 4:
                 panel.set_body_height(height)
         finally:
@@ -2337,6 +2591,7 @@ class VintedMonitorGUI:
             save_setting("max_alerts", str(int(self.max_alerts_var.get())))
         except (tk.TclError, ValueError):
             pass
+        save_setting(self.THEME_KEY, self.theme_var.get())
         self._save_watches()
 
     def _apply_history_policy(self):
