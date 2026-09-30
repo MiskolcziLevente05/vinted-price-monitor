@@ -24,6 +24,7 @@ from tkinter import (
 
 import monitor
 from monitor import (
+    VERSION,
     main_loop,
     build_search_url,
     fetch_category_tree,
@@ -1004,7 +1005,7 @@ class VintedMonitorGUI:
     def __init__(self, root):
         self.root = root
         UI.init(root)
-        self.root.title("Vinted Price Monitor")
+        self.root.title(f"Vinted Price Monitor — {VERSION}")
         self.root.geometry("1280x940")
         self.root.minsize(880, 560)
         self.root.configure(bg=BG)

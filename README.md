@@ -1,5 +1,7 @@
 # Vinted Smart Price Monitor 🐍 🛍️
 
+> Verzió: **0.9**
+
 A lightweight, standalone Python automation script designed to monitor specific search queries on Vinted in real-time. The script analyzes listings, filters out duplicates using a local database, and dispatches instant rich alerts via Discord Webhooks when an item is found.
 
 Built to demonstrate **Python-based web automation, resilient scraping practices, and efficient scripting architecture** without depending on a heavy web framework.
