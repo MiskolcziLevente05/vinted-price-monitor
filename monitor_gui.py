@@ -1180,11 +1180,7 @@ class SearchModule(Module):
     title = "Keresés és figyelések"
 
     def _build(self):
-        # A "＋ Új figyelés" a modul fejlécében marad, így görgetéskor is
-        # elérhető — a figyelések listája hosszú is lehet.
-        head = self._head()
-        ttk.Button(head, text="＋ Új figyelés", style="Link.TButton",
-                   command=self.gui.add_watch).pack(side=RIGHT)
+        self._head()
 
         scroll = ScrollFrame(self.inner, bg=CARD)
         scroll.pack(fill=BOTH, expand=True)
@@ -1317,7 +1313,11 @@ class SearchModule(Module):
         """
         tk.Frame(body, bg=BORDER, height=1).pack(fill=X, pady=(18, 4))
 
+        # A "＋ Új figyelés" a lista címsorában van, a számláló mellett:
+        # oda tartozik, és onnan egyértelmű, mit hoz létre.
         head = self._col_head(body, "Figyelések")
+        ttk.Button(head, text="＋ Új figyelés", style="Link.TButton",
+                   command=self.gui.add_watch).pack(side=RIGHT)
         self.gui.watch_count = tk.Label(head, text="(0)", bg=CARD, fg=MUTED,
                                         font=(FONT, 9))
         self.gui.watch_count.pack(side=RIGHT, padx=(0, 6))

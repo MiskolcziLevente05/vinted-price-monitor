@@ -205,9 +205,9 @@ Az alkalmazás három rétegből áll, mindegyik önálló felelősséggel:
   kiemeléssel látszik, a sáv alján a **Beállítások** hivatkozás. A feliratok a
   modulok `nav` értékéből jönnek, így egyetlen helyen kell módosítani.
 * **Keresés és figyelések egy nézetben, egymás alatt:** felül a szűrő-űrlap,
-  alatta a mentett figyelések. Egy lépésben hozzáadsz egy figyelést
-  (`＋ Új figyelés`), és nem kell nézetet váltanod, hogy lássad, mit mentettél.
-  A link a modul fejlécében van, ezért hosszú lista esetén is elérhető.
+  alatta a mentett figyelések. Egy lépésben hozzáadsz egy figyelést a lista
+  címsorában lévő `＋ Új figyelés` linkkel, és nem kell nézetet váltanod, hogy
+  lássad, mit mentettél.
 * **Görgetés modulonként:** a **Keresés** egyetlen görgethető lapot kap, amelyen
   az űrlap és a figyelések is fent van (a görgetősáv csak akkor jelenik meg, ha
   a tartalom kilóg), a **Találatok** és a **Napló** a teljes területet kitölti és
