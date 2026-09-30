@@ -51,8 +51,9 @@ szűrő űrlap ──► szűrő API (requests + Vinted sütik) ──► chip-e
 * **Anti-Bot Resiliency:** randomized delay intervals (*jitter*), a real browser user agent and `selenium-stealth` to prevent IP rate-limiting.
 * **Result table:** every found item appears in the GUI as it arrives, with a double-click to open it on Vinted. The table is capped at 400 rows and re-loadable from the database.
 * **Desktop notifications:** an optional beep and immediate table row per new item, independent of Discord.
-* **Scrollable, rearranged layout:** panels for filters, watches and results can be dragged by their `⠿` grips into any order and collapsed with `▾`; the log docks right, left, bottom or hidden. The results table can be **swapped into the tall right column** ("⇄ jobbra") so far more rows are visible at once. The arrangement is saved and restored on the next start, and the window itself scrolls when it is too small for the content. Sizes are **responsive**: the side column and the bottom-docked log scale with the window (with sensible minimums), and the watch descriptions re-wrap to fit.
-* **Modular, themeable UI:** the filter and watch **cards can be hidden/shown** from the `⇄` menu without losing the form state (panel visibility is persisted too). A **Modern (dark)** theme can be switched to live from the Settings window, next to the default **Classic (light)** look — every widget, the log and the result table repaint instantly, and the choice is saved.
+* **Modular, button-free navigation:** the app is built from four independent modules — **Keresés**, **Figyelések**, **Találatok**, **Napló** — switched from a left sidebar. No button maze, no drag, no docking, no collapse arrows. The active view is remembered across restarts, and each module is built once, so the form state, the watch list and the result table all survive switching views.
+* **Everything in one header:** the top bar carries the brand, the live status (dot + text), the "new items" badge and the single primary action (**Indítás / Leállítás**). Secondary actions are quiet text links in each module's own header; watch rows use double-click to edit and the right mouse button for a small menu, instead of per-row icons.
+* **Live, themeable UI:** a **Modern (dark)** theme can be switched to live from the Settings window, next to the default **Classic (light)** look — sidebar, log, result table and every widget repaint instantly, and the choice is saved.
 
 ---
 
@@ -167,7 +168,7 @@ webhook és a figyelések túléli az újraindítást:
 | Fájl | Tartalom | Élettartam |
 |------|----------|------------|
 | `vinted_monitor.db` | a monitor által talált termékek | minden indításkor újraindul¹ |
-| `settings.db` | webhook, figyelések, intervallum, előzmény-beállítás, kategóriafa-cache | tartós |
+| `settings.db` | webhook, figyelések, intervallum, előzmény-beállítás, kategóriafa-cache, téma, aktív nézet | tartós |
 
 ¹ Hacs a **Beállítások → Előzmények megőrzése** nincs bekapcsolva. Ekkor a
 `vinted_monitor.db` megmarad, és a GUI a találatok előzményét is betölti a
@@ -186,15 +187,31 @@ A **Kész** gomb — és az ablak X-e — azonnal elment, szerkesztés közben p
 * Indításkor az URL *alakja* is ellenőrzött, hogy egy elgépelt URL ne
   csendben nyelje el az összes riasztást.
 
-### Elrendezés
+### Felépítés
 
-* **Görgethető lap:** ha az ablak kisebb a tartalomnál, a jobb szélen megjelenik a görgetősáv (a görgő is működik). A napló és a találati táblázat maguk görgetnek, felettük a lap nem „csúszik kettőzve”.
-* **Reszponzív méretek:** a napló oszlopa (oldalt dokkolva) és magassága (alul dokkolva) az ablak méretéhez igazodik — széles ablaknál szélesebb a napló, kicsinél a minimumra szorul, akkor a lap továbbra is görgethető. A figyelés-leírások tördelése követi az új szélességet.
-* **Panelek átrendezése:** a kereső, a figyelések és a találatok kártyáinak fejlécét a `⠿` fogantyúnál megfogva húzd a kívánt helyre — a kék vonal mutatja, hová esik. A `▾` gombbal bármelyik panel összecsukható.
-* **Moduláris panelek:** a napló `⇄` menüjéből a **Szűrő-kártya** és a **Figyelés-kártya** ki-/bekapcsolható — a kártya eltűnik a lapról, de az állapota (pl. a kulcsszó mező tartalma) megmarad, és a döntés is mentődik.
-* **Napló dokkolása:** a napló fejlécének `⇄` menüjéből választható: jobbra, balra, alulra, vagy elrejtve (a `Ctrl+L` az elrejtést/visszaállítást váltja). Ugyanitt az „Elrendezés visszaállítása” az alapértelmezettre állítja vissza a sorrendet, a dokkolást és a látható paneleket.
-* **Találatok ⇄ napló:** a találatok kártyájának `⇄ jobbra` gombjával a találati táblázat átkerül a jobb oldali, teljes magasságú oszlopba, a napló pedig alulra — így sokkal több találat látszik egyszerre. A `⇄ vissza` gombbal (vagy a napló `⇄` menüjének „Találatok ⇄ napló” pontjával) visszahelyezhető a bal oldali listába.
-* **Emlékezet:** a panel-sorrendet, az összecsukott állapotot, a napló helyét, a találatok (jobb oszlopban / listában) helyét és a rejtett paneleket a program a `settings.db`-ben tárolja, tehát a következő indításkor ugyanígy nyílik meg.
+Az alkalmazás három rétegből áll, mindegyik önálló felelősséggel:
+
+| Réteg | Tartalom |
+|-------|----------|
+| **Téma & stílus** | `PALETTE_KEYS`, `THEMES`, `_apply_palette`, `_recolor_widgets`, `UI` — minden szín a palettából jön, ezért a téma élőben cserélhető |
+| **Összetevők** | `ScrollFrame`, `ResultsPanel`, `MultiSelectPopup`, `CategoryTreePopup`, `WatchDialog`, `LoadingWindow`, `SettingsWindow` — újrahasznosítható widgetek és dialógusok |
+| **Modulok** | `Module` bázis + `SearchModule`, `WatchesModule`, `ResultsModule`, `LogModule` — a négy nézet tartalma |
+
+* **Négy modul, egy keretváz:** a `VintedMonitorGUI` csak a héjat építi (fejléc,
+  navigációs sáv, modul-tér), a nézetek tartalmát a modulok adják. Egy modul
+  egyszer épül meg, a navigáció csak megmutatja/elrejti — soha nem születhet
+  újra, így az űrlap és a táblázat állapota sosem vész el.
+* **Navigációs sáv:** feliratok (nem gombok) a bal oldalon; az aktív nézet
+  kiemeléssel látszik, a sáv alján a **Beállítások** hivatkozás.
+* **Görgetés modulonként:** a **Keresés** és a **Figyelések** görgethető
+  lapot kap (a görgetősáv csak akkor jelenik meg, ha a tartalom kilóg), a
+  **Találatok** és a **Napló** a teljes területet kitölti és maga görget. A
+  görgő felett a lapot az görgeti, ahol a widget nem görget önmaga.
+* **Nincs átalakítás-mechanika:** se húzás, se dokkolás, se összecsukás, se
+  találat-váltás. Ehelyett a figyelési sorokon dupla kattintás szerkeszt, a
+  jobb gomb menüt ad (Szerkesztés / Törlés).
+* **Emlékezet:** az aktív nézet a `settings.db` `view` kulcsában őrződik, így
+  a következő indításkor ugyanott nyílik meg a program.
 
 ### Megjelenés (témák)
 
@@ -214,8 +231,10 @@ hozzáadása a jövőben egyetlen szótár-bejegyzés.
 | Billentyű | Művelet |
 |-----------|---------|
 | `Ctrl+Enter` | indítás / leállítás |
-| `Ctrl+L` | eseménynapló megjelenítése / elrejtése |
+| `Ctrl+L` | napló-nézet megjelenítése / visszatérés az előző nézetre |
 | `Ctrl+,` | beállítások |
-| `Ctrl+F` | fókusz a kulcsszó mezőre (törléssel) |
+| `Ctrl+F` | kereső-nézet + fókusz a kulcsszó mezőre |
 | `Esc` | beállítások bezárása, illetve a monitor leállítása |
-| görgő a lapon | a lap görgetése (a napló/táblázat fölött azok görgetnek) |
+| dupla kattintás | figyelés szerkesztése, illetve találat megnyitása böngészőben |
+| jobb gomb | figyelés menü (Szerkesztés / Törlés) |
+| görgő a modulon | a modul görgetése (a napló/táblázat fölött azok görgetnek) |
