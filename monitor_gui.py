@@ -1,10 +1,12 @@
 """Vinted Price Monitor — desktop GUI (Tkinter).
 
-Az alkalmazás négy önálló modulra épül: Keresés, Figyelések, Találatok és
-Napló. A bal oldali navigációs sáv vált köztük — nincs gomb-labirintus,
-húzgálás vagy dokkolás. A fejlécben a státusz és a legfontosabb akció
-(Indítás / Leállítás) kap helyet; minden hálózati munka munkaszálon fut,
-és a `log_queue`-n keresztül jelent, így a Tk főhurok sosem akad el.
+Az alkalmazás három önálló modulra épül: Keresés, Találatok és Napló. A
+keresési űrlap és a mentett figyelések az első modulban, két oszlopban
+egymás mellett élnek. A bal oldali navigációs sáv vált a modulok közt —
+nincs gomb-labirintus, húzgálás vagy dokkolás. A fejlécben a státusz és a
+legfontosabb akció (Indítás / Leállítás) kap helyet; minden hálózati munka
+munkaszálon fut, és a `log_queue`-n keresztül jelent, így a Tk főhurok sosem
+akad el.
 """
 
 import atexit
@@ -146,6 +148,7 @@ DESKTOP_KEY = "desktop_notify"
 VIEW_KEY = "view"
 
 SIDEBAR_W = 216      # a navigációs sáv szélessége
+FORM_COL_W = 340     # a kereső-űrlap oszlopa a kétoszlopos nézetben
 WHEEL_STEP = 3       # egy görgő-kattintás hány "egységet" ugrik
 
 # Ezek a widgetek maguk görgetnek a mouse wheelre, ezért felettük a modul
@@ -304,12 +307,28 @@ class ScrollFrame(tk.Frame):
         if self.root is not None:
             self.root.bind("<MouseWheel>", self._wheel, add="+")
 
-    def _on_inner(self, _event=None):
+    def refresh(self, settle=False):
+        """A görgetési tartomány újramérése.
+
+        `settle=True` a tartalom átépülése után kell (törlés, újrarajzolás):
+        a vászon ablak-eleme csak újraméréskor veszi fel a kisebb méretet, és
+        enélkül egy görgetés után lerövidült lista a régi méretben marad —
+        beragad a görgetősáv, és a felső sorok kikerülnek a nézetből.
+        """
         try:
+            if settle:
+                self.update_idletasks()
+            self.canvas.itemconfigure(self._win,
+                                      width=self.canvas.winfo_width())
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         except tk.TclError:
             return
         self._sync_vsb(*self.canvas.yview())
+
+    def _on_inner(self, _event=None):
+        # itt nem kell `settle`: a vásznat épp méretezi a Tk, így az elem
+        # mérete amúgy is újraszámolódik
+        self.refresh()
 
     def _on_canvas(self, event):
         try:
@@ -1128,6 +1147,15 @@ class Module:
                  font=(FONT, 13, "bold")).pack(side=LEFT)
         return head
 
+    def _col_head(self, parent, text):
+        """Egy oszlop címsora a kétoszlopos nézetben (kisebb, mint a
+        modul fejlécé, mert két ilyen van egymás mellett)."""
+        head = tk.Frame(parent, bg=CARD)
+        head.pack(fill=X, pady=(0, 4))
+        tk.Label(head, text=text, bg=CARD, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(side=LEFT)
+        return head
+
     def _body_area(self, padx=0):
         area = tk.Frame(self.inner, bg=CARD)
         area.pack(fill=BOTH, expand=True, padx=padx, pady=(4, 0))
@@ -1141,19 +1169,54 @@ class Module:
 
 
 class SearchModule(Module):
-    """A kereső-szűrők űrlapja. A fő akció (Indítás) a fejlécben van;
-    innen menthető figyelés, illetve a találatok modulja érhető el."""
+    """A keresés és a figyelések egy nézetben.
+
+    Bal oldalon a szűrő-űrlap, jobb oldalon a mentett figyelések: a
+    beállított szűrőkből egy lépésben menthető figyelés, és a két lista
+    egymás mellett látszik. A fő akció (Indítás) a fejlécben van.
+    """
 
     key = "search"
     title = "Keresés"
 
     def _build(self):
-        self._head()
+        # Két oszlop egy nézetben: bal a szűrő-űrlap, jobb a figyelések.
+        # Így a keresés és a figyelések egymás mellett látszanak, és a
+        # "＋ Új figyelés" pont a beállított szűrőkből indul.
+        cols = tk.Frame(self.inner, bg=CARD)
+        cols.pack(fill=BOTH, expand=True)
+        cols.grid_columnconfigure(0, weight=0, minsize=FORM_COL_W)
+        cols.grid_columnconfigure(1, weight=0)
+        cols.grid_columnconfigure(2, weight=1)
+        cols.grid_rowconfigure(0, weight=1)
 
-        area = self._body_area(padx=2)
+        left = tk.Frame(cols, bg=CARD)
+        # "nsew": az oszlop a cella teljes szélességét kitölti, nem csak
+        # a tartalom természetes szélességét (különben üres hézag marad mellette)
+        left.grid(row=0, column=0, sticky="nsew")
+        tk.Frame(cols, bg=BORDER, width=1).grid(row=0, column=1, sticky="ns")
+        right = tk.Frame(cols, bg=CARD)
+        right.grid(row=0, column=2, sticky="nsew", padx=(20, 0))
+
+        self._build_form(left)
+        self._build_watches(right)
+
+    # ── bal oszlop: a kereső-szűrők űrlapja ─────────────────────────────────
+
+    def _build_form(self, parent):
+        head = self._col_head(parent, "Új keresés")
+        self.gui.clear_btn = ttk.Button(head, text="Szűrők törlése",
+                                        style="Link.TButton",
+                                        command=self.gui.clear_filters)
+        self.gui.clear_btn.pack(side=RIGHT)
+
+        area = tk.Frame(parent, bg=CARD)
+        area.pack(fill=BOTH, expand=True, pady=(10, 0))
         scroll = ScrollFrame(area, bg=CARD)
         scroll.pack(fill=BOTH, expand=True)
         body = scroll.inner
+        # `add="+"`: a ScrollFrame is köt erre az eseményre
+        body.bind("<Configure>", self.gui._on_form_column_resize, add="+")
 
         r1 = tk.Frame(body, bg=CARD)
         r1.pack(fill=X, pady=(0, 12))
@@ -1169,7 +1232,7 @@ class SearchModule(Module):
         self.gui.order_combo = ttk.Combobox(
             r1b, textvariable=self.gui.order_var, state="readonly",
             values=[label for _, label in ORDER_OPTIONS])
-        self.gui.order_combo.pack(side=LEFT, fill=X, expand=True, pady=(4, 0))
+        self.gui.order_combo.pack(fill=X, pady=(4, 0))
         self.gui.order_var.trace_add("write", lambda *a: self.gui._check_order_hint())
 
         r2 = tk.Frame(body, bg=CARD)
@@ -1179,36 +1242,33 @@ class SearchModule(Module):
         price_row.pack(fill=X, pady=(4, 0))
         self.gui.price_from_var = StringVar()
         self.gui.price_to_var = StringVar()
-        self.gui.min_price_var = StringVar(value="0")
-        ttk.Entry(price_row, textvariable=self.gui.price_from_var, width=11).pack(side=LEFT)
+        ttk.Entry(price_row, textvariable=self.gui.price_from_var, width=9).pack(side=LEFT)
         tk.Label(price_row, text="—", bg=CARD, fg=MUTED).pack(side=LEFT, padx=8)
-        ttk.Entry(price_row, textvariable=self.gui.price_to_var, width=11).pack(side=LEFT)
+        ttk.Entry(price_row, textvariable=self.gui.price_to_var, width=9).pack(side=LEFT)
         ttk.Label(price_row, text="from · to", style="Muted.TLabel").pack(
             side=LEFT, padx=(10, 0))
 
-        tk.Frame(price_row, bg=BORDER, width=1).pack(side=LEFT, fill=Y, padx=10)
-        ttk.Label(price_row, text="Helyi min.", style="Field.TLabel").pack(side=LEFT)
-        ttk.Entry(price_row, textvariable=self.gui.min_price_var, width=8).pack(
+        r2c = tk.Frame(body, bg=CARD)
+        r2c.pack(fill=X, pady=(0, 12))
+        ttk.Label(r2c, text="Helyi minimum", style="Field.TLabel").pack(side=LEFT)
+        self.gui.min_price_var = StringVar(value="0")
+        ttk.Entry(r2c, textvariable=self.gui.min_price_var, width=9).pack(
+            side=LEFT, padx=(10, 0))
+        ttk.Label(r2c, text="Ft felett küldj", style="Muted.TLabel").pack(
             side=LEFT, padx=(8, 0))
-        ttk.Label(price_row, text="Ft felett küldj", style="Muted.TLabel").pack(
-            side=LEFT, padx=(8, 0))
-        tk.Frame(price_row, bg=BORDER, width=1).pack(side=LEFT, fill=Y, padx=10)
-
-        self.gui.clear_btn = ttk.Button(price_row, text="Szűrők törlése",
-                                        style="Ghost.TButton",
-                                        command=self.gui.clear_filters)
-        self.gui.clear_btn.pack(side=LEFT, padx=(4, 0))
 
         r2b = tk.Frame(body, bg=CARD)
-        r2b.pack(fill=X, pady=(10, 0))
+        r2b.pack(fill=X, pady=(0, 12))
         ttk.Label(r2b, text="Oldalak", style="Field.TLabel").pack(side=LEFT)
         self.gui.pages_var = IntVar(value=1)
         ttk.Spinbox(r2b, from_=1, to=10, width=4, textvariable=self.gui.pages_var).pack(
-            side=LEFT, padx=(8, 4))
+            side=LEFT, padx=(10, 4))
         ttk.Label(r2b, text="× 96 tétel / ciklus", style="Muted.TLabel").pack(side=LEFT)
-        tk.Label(r2b, text="·", bg=CARD, fg=MUTED).pack(side=LEFT, padx=10)
+
+        r2d = tk.Frame(body, bg=CARD)
+        r2d.pack(fill=X, pady=(0, 12))
         self.gui.desktop_var = BooleanVar(value=load_bool(DESKTOP_KEY, True))
-        ttk.Checkbutton(r2b, text="Asztali értesítés", variable=self.gui.desktop_var,
+        ttk.Checkbutton(r2d, text="Asztali értesítés", variable=self.gui.desktop_var,
                         style="Card.TCheckbutton").pack(side=LEFT)
 
         self.gui.order_hint = tk.Label(
@@ -1216,29 +1276,32 @@ class SearchModule(Module):
             text=("ℹ A „Relevancia” rendezésnél az első oldal nem mozdul, "
                   "ezért új terméket nem fogsz látni. Válts „Legújabb”-ra!"),
             bg=AMBER_LT, fg=AMBER, font=(FONT, 9), anchor=W,
-            padx=10, pady=6, wraplength=640, justify="left")
+            padx=10, pady=6, wraplength=FORM_COL_W - 60, justify="left")
         self.gui.order_hint.pack_forget()
 
         r3 = tk.Frame(body, bg=CARD)
-        r3.pack(fill=X, pady=(12, 0))
+        r3.pack(fill=X, pady=(0, 12))
         self.gui.chips = tk.Frame(r3, bg=CARD)
         self.gui.chips.pack(fill=X)
         self.gui._rebuild_chips()
 
         r4 = tk.Frame(body, bg=CARD)
-        r4.pack(fill=X, pady=(14, 0))
+        r4.pack(fill=X, pady=(0, 14))
+        r4.grid_columnconfigure(0, weight=1, uniform="extras")
+        r4.grid_columnconfigure(1, weight=1, uniform="extras")
         self.gui.discount_var = BooleanVar(value=False)
         self.gui.favourite_var = BooleanVar(value=False)
         self.gui.handicraft_var = BooleanVar(value=False)
         self.gui.give_away_var = BooleanVar(value=False)
-        for var, text in (
+        for i, (var, text) in enumerate((
             (self.gui.discount_var, "Kedvezményes"),
             (self.gui.favourite_var, "Csak kedvencek"),
             (self.gui.handicraft_var, "Kézműves"),
             (self.gui.give_away_var, "Ingyen elvihető"),
-        ):
+        )):
             ttk.Checkbutton(r4, text=text, variable=var,
-                            style="Card.TCheckbutton").pack(side=LEFT, padx=(0, 18))
+                            style="Card.TCheckbutton").grid(
+                row=i // 2, column=i % 2, sticky=W, pady=2)
 
         for var in (self.gui.search_text_var, self.gui.price_from_var,
                     self.gui.price_to_var, self.gui.min_price_var,
@@ -1257,39 +1320,43 @@ class SearchModule(Module):
         self.gui._webhook_save_job = None
         self.gui.webhook_var.trace_add("write", self.gui._on_webhook_changed)
 
-    def on_show(self):
-        self.gui._check_order_hint()
+    # ── jobb oszlop: a mentett figyelések ────────────────────────────────────
 
+    def _build_watches(self, parent):
+        """A figyelések listája.
 
-class WatchesModule(Module):
-    """A mentett figyelések listája.
-
-    A sorokon dupla kattintás szerkeszt, a jobb gomb kontextus-menüt nyit
-    (Szerkesztés / Törlés) — nincsenek rejtélyes minigombok.
-    """
-
-    key = "watches"
-    title = "Figyelések"
-
-    def _build(self):
-        head = self._head()
+        A sorokon dupla kattintás szerkeszt, a jobb gomb kontextus-menüt
+        nyit (Szerkesztés / Törlés) — nincsenek rejtélyes minigombok.
+        """
+        head = self._col_head(parent, "Figyelések")
         self.gui.watch_count = tk.Label(head, text="(0)", bg=CARD, fg=MUTED,
                                         font=(FONT, 9))
         self.gui.watch_count.pack(side=RIGHT, padx=(0, 6))
         ttk.Button(head, text="＋ Új figyelés", style="Link.TButton",
                    command=self.gui.add_watch).pack(side=RIGHT)
 
-        ttk.Label(self.inner, text="dupla kattintás = szerkesztés · "
+        ttk.Label(parent, text="dupla kattintás = szerkesztés · "
                   "jobb gomb = menü",
-                  style="Muted.TLabel", anchor=W).pack(fill=X, pady=(0, 8))
+                  style="Muted.TLabel", anchor=W).pack(fill=X, pady=(10, 8))
 
-        area = self._body_area(padx=2)
+        area = tk.Frame(parent, bg=CARD)
+        area.pack(fill=BOTH, expand=True)
         scroll = ScrollFrame(area, bg=CARD)
         scroll.pack(fill=BOTH, expand=True)
+        self.gui._watch_scroll = scroll
         self.gui.watch_box = tk.Frame(scroll.inner, bg=CARD)
         self.gui.watch_box.pack(fill=X)
+        # A leírások a rendelkezésre álló szélességre törnek, és a
+        # `winfo_width()` az első megjelenés előtt még 1 — ezért az oszlop
+        # átméretezésekor újra kell számolni. A szélesség-őr miatt az
+        # újrarajzolás nem indítja újra önmagát.
+        # `add="+"`: a ScrollFrame is köt erre az eseményre (görgetőhatárok),
+        # és egy kötés felülírná az övét
+        scroll.inner.bind("<Configure>", self.gui._on_watch_column_resize,
+                          add="+")
 
     def on_show(self):
+        self.gui._check_order_hint()
         self.gui._render_watches()
 
 
@@ -1347,7 +1414,7 @@ class LogModule(Module):
 class VintedMonitorGUI:
     THEME_KEY = "theme"
     VIEW_KEY = VIEW_KEY
-    MODULES = (SearchModule, WatchesModule, ResultsModule, LogModule)
+    MODULES = (SearchModule, ResultsModule, LogModule)
 
     def __init__(self, root):
         self.root = root
@@ -1361,7 +1428,10 @@ class VintedMonitorGUI:
         UI.init(root)
         self.root.title(f"Vinted Price Monitor — {VERSION}")
         self.root.geometry("1280x940")
-        self.root.minsize(880, 560)
+        # A minimum méretet a kétoszlopos nézet diktálja: ennél szűkebben a
+        # figyelések oszlopa (sáv + űrlap + padding ≈ 650px) használhatatlanná
+        # szűkülne, ezért a kártya feleslegesen sávosan zsugorodna helyette.
+        self.root.minsize(960, 600)
         self.root.configure(bg=BG)
 
         self.worker_thread = None
@@ -1395,6 +1465,9 @@ class VintedMonitorGUI:
         self._editing = None
         self._closing = False
         self._after_jobs = set()
+        self._pending = {}          # kulcs -> job, egy eseménysorozat végére
+        self._watch_col_w = 0       # a figyelések oszlopának utolsó szélessége
+        self._form_col_w = 0        # a kereső-űrlap oszlopának utolsó szélessége
 
         self._build_shell()
         self._update_clear_btn()
@@ -1479,9 +1552,10 @@ class VintedMonitorGUI:
 
         tk.Label(inner, text="NÉZETEK", bg=SIDEBAR, fg=MUTED,
                  font=(FONT, 8, "bold"), padx=12).pack(anchor="w", pady=(0, 8))
-        for key, label in (("search", "Keresés"), ("watches", "Figyelések"),
-                           ("results", "Találatok"), ("log", "Napló")):
-            self._nav_item(inner, key, label)
+        # a feliratok a modulok `title` értékéből jönnek: egyetlen helyen
+        # kell módosítani, ha nézetet adunk hozzá
+        for module in self.MODULES:
+            self._nav_item(inner, module.key, module.title)
 
         tk.Frame(inner, bg=BORDER, height=1).pack(fill=X, pady=12)
 
@@ -1496,9 +1570,9 @@ class VintedMonitorGUI:
         self.settings_link.bind(
             "<Leave>", lambda e: self.settings_link.configure(bg=SIDEBAR))
 
-        tk.Label(inner, text="Pillanatkép-megjelenítés: 4 nézet",
+        tk.Label(inner, text="Keresés és figyelések\negy nézetben",
                  bg=SIDEBAR, fg=MUTED, font=(FONT, 8),
-                 padx=12).pack(anchor="w", pady=(10, 0))
+                 padx=12, justify="left").pack(anchor="w", pady=(10, 0))
 
     def _nav_item(self, parent, key, label):
         item = tk.Label(parent, text=label, bg=SIDEBAR, fg=TEXT,
@@ -1598,6 +1672,17 @@ class VintedMonitorGUI:
         except Exception:
             pass
 
+    def _debounce(self, key, delay_ms, func):
+        """`after` újraindítással: egy gyors eseménysorozat közül csak az
+        utolsó fut le (például ablak-átméretezés utáni újrarajzolás)."""
+        self._unschedule(self._pending.get(key))
+
+        def run():
+            self._pending.pop(key, None)
+            func()
+
+        self._pending[key] = self._schedule(delay_ms, run)
+
     def _cancel_jobs(self):
         for job in list(self._after_jobs):
             try:
@@ -1650,6 +1735,11 @@ class VintedMonitorGUI:
         if self.order_var.get() == ORDER_OPTIONS[1][1]:
             self.order_hint.pack_forget()
         else:
+            # a szöveg az oszlop szélességére tör (a rögzített érték
+            # szűkebb vagy szélesebb oszlopnál nem fogyna/jégedne)
+            w = self.order_hint.master.winfo_width()
+            if w > 1:
+                self.order_hint.configure(wraplength=w - 24)
             self.order_hint.pack(fill=X, pady=(10, 0), before=self.chips.master)
 
     def _has_filters(self):
@@ -1695,6 +1785,18 @@ class VintedMonitorGUI:
 
     # ── Figyelések ──────────────────────────────────────────────────────────
 
+    def _on_watch_column_resize(self, event):
+        if event.width == self._watch_col_w:
+            return
+        self._watch_col_w = event.width
+        self._debounce("watch_col", 150, self._render_watches)
+
+    def _on_form_column_resize(self, event):
+        if event.width == self._form_col_w:
+            return
+        self._form_col_w = event.width
+        self._debounce("form_col", 150, self._check_order_hint)
+
     def _render_watches(self):
         for w in self.watch_box.winfo_children():
             w.destroy()
@@ -1706,6 +1808,7 @@ class VintedMonitorGUI:
                      "„＋ Új figyelés”.",
                 bg=CARD, fg=MUTED, font=(FONT, 9), anchor=W).pack(
                     fill=X, pady=(2, 0))
+            self._watch_scroll.refresh(settle=True)
             return
 
         wrap = max(200, self.watch_box.winfo_width() - 24)
@@ -1746,6 +1849,9 @@ class VintedMonitorGUI:
                     child.bind("<Button-3>", lambda e, i=idx: self._watch_menu(e, i))
                 except tk.TclError:
                     pass
+
+        # a sorok újraépültek: a görgetési tartományt újra kell mérni
+        self._watch_scroll.refresh(settle=True)
 
     def _watch_menu(self, event, idx):
         """A sor jobb-gombos menüje: frissen épül, így a téma színeit követi."""

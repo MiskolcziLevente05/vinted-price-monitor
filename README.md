@@ -51,7 +51,7 @@ szűrő űrlap ──► szűrő API (requests + Vinted sütik) ──► chip-e
 * **Anti-Bot Resiliency:** randomized delay intervals (*jitter*), a real browser user agent and `selenium-stealth` to prevent IP rate-limiting.
 * **Result table:** every found item appears in the GUI as it arrives, with a double-click to open it on Vinted. The table is capped at 400 rows and re-loadable from the database.
 * **Desktop notifications:** an optional beep and immediate table row per new item, independent of Discord.
-* **Modular, button-free navigation:** the app is built from four independent modules — **Keresés**, **Figyelések**, **Találatok**, **Napló** — switched from a left sidebar. No button maze, no drag, no docking, no collapse arrows. The active view is remembered across restarts, and each module is built once, so the form state, the watch list and the result table all survive switching views.
+* **Modular, button-free navigation:** the app is built from three independent modules — **Keresés**, **Találatok**, **Napló** — switched from a left sidebar. The search form and your saved watches live side by side in the first one. No button maze, no drag, no docking, no collapse arrows. The active view is remembered across restarts, and each module is built once, so the form state, the watch list and the result table all survive switching views.
 * **Everything in one header:** the top bar carries the brand, the live status (dot + text), the "new items" badge and the single primary action (**Indítás / Leállítás**). Secondary actions are quiet text links in each module's own header; watch rows use double-click to edit and the right mouse button for a small menu, instead of per-row icons.
 * **Live, themeable UI:** a **Modern (dark)** theme can be switched to live from the Settings window, next to the default **Classic (light)** look — sidebar, log, result table and every widget repaint instantly, and the choice is saved.
 
@@ -195,18 +195,22 @@ Az alkalmazás három rétegből áll, mindegyik önálló felelősséggel:
 |-------|----------|
 | **Téma & stílus** | `PALETTE_KEYS`, `THEMES`, `_apply_palette`, `_recolor_widgets`, `UI` — minden szín a palettából jön, ezért a téma élőben cserélhető |
 | **Összetevők** | `ScrollFrame`, `ResultsPanel`, `MultiSelectPopup`, `CategoryTreePopup`, `WatchDialog`, `LoadingWindow`, `SettingsWindow` — újrahasznosítható widgetek és dialógusok |
-| **Modulok** | `Module` bázis + `SearchModule`, `WatchesModule`, `ResultsModule`, `LogModule` — a négy nézet tartalma |
+| **Modulok** | `Module` bázis + `SearchModule`, `ResultsModule`, `LogModule` — a három nézet tartalma |
 
-* **Négy modul, egy keretváz:** a `VintedMonitorGUI` csak a héjat építi (fejléc,
+* **Három modul, egy keretváz:** a `VintedMonitorGUI` csak a héjat építi (fejléc,
   navigációs sáv, modul-tér), a nézetek tartalmát a modulok adják. Egy modul
   egyszer épül meg, a navigáció csak megmutatja/elrejti — soha nem születhet
   újra, így az űrlap és a táblázat állapota sosem vész el.
 * **Navigációs sáv:** feliratok (nem gombok) a bal oldalon; az aktív nézet
-  kiemeléssel látszik, a sáv alján a **Beállítások** hivatkozás.
-* **Görgetés modulonként:** a **Keresés** és a **Figyelések** görgethető
-  lapot kap (a görgetősáv csak akkor jelenik meg, ha a tartalom kilóg), a
-  **Találatok** és a **Napló** a teljes területet kitölti és maga görget. A
-  görgő felett a lapot az görgeti, ahol a widget nem görget önmaga.
+  kiemeléssel látszik, a sáv alján a **Beállítások** hivatkozás. A feliratok a
+  modulok `title` értékéből jönnek, így egyetlen helyen kell módosítani.
+* **Keresés és figyelések egy nézetben, két oszlopban:** bal oldalon a szűrő-űrlap,
+  jobb oldalon a mentett figyelések. Egy lépésben hozzáadsz egy figyelést
+  (`＋ Új figyelés`), és nem kell nézetet váltanod, hogy lássad, mit mentettél.
+* **Görgetés modulonként:** a **Keresés** mindkét oszlopa görgethető lapot kap
+  (a görgetősáv csak akkor jelenik meg, ha a tartalom kilóg), a **Találatok**
+  és a **Napló** a teljes területet kitölti és maga görget. A görgő felett a
+  lapot az görgeti, ahol a widget nem görget önmaga.
 * **Nincs átalakítás-mechanika:** se húzás, se dokkolás, se összecsukás, se
   találat-váltás. Ehelyett a figyelési sorokon dupla kattintás szerkeszt, a
   jobb gomb menüt ad (Szerkesztés / Törlés).
