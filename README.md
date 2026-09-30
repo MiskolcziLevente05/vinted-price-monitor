@@ -49,6 +49,7 @@ szűrő űrlap ──► szűrő API (requests + Vinted sütik) ──► chip-e
 * **Anti-Bot Resiliency:** randomized delay intervals (*jitter*), a real browser user agent and `selenium-stealth` to prevent IP rate-limiting.
 * **Result table:** every found item appears in the GUI as it arrives, with a double-click to open it on Vinted. The table is capped at 400 rows and re-loadable from the database.
 * **Desktop notifications:** an optional beep and immediate table row per new item, independent of Discord.
+* **Scrollable, rearranged layout:** panels for filters, watches and results can be dragged by their `⠿` grips into any order and collapsed with `▾`; the log docks right, left, bottom or hidden. The arrangement is saved and restored on the next start, and the window itself scrolls when it is too small for the content.
 
 ---
 
@@ -182,6 +183,13 @@ A **Kész** gomb — és az ablak X-e — azonnal elment, szerkesztés közben p
 * Indításkor az URL *alakja* is ellenőrzött, hogy egy elgépelt URL ne
   csendben nyelje el az összes riasztást.
 
+### Elrendezés
+
+* **Görgethető lap:** ha az ablak kisebb a tartalomnál, a jobb szélen megjelenik a görgetősáv (a görgő is működik). A napló és a találati táblázat maguk görgetnek, felettük a lap nem „csúszik kettőzve”.
+* **Panelek átrendezése:** a kereső, a figyelések és a találatok kártyáinak fejlécét a `⠿` fogantyúnál megfogva húzd a kívánt helyre — a kék vonal mutatja, hová esik. A `▾` gombbal bármelyik panel összecsukható.
+* **Napló dokkolása:** a napló fejlécének `⇄` menüjéből választható: jobbra, balra, alulra, vagy elrejtve (a `Ctrl+L` az elrejtést/visszaállítást váltja). Ugyanitt az „Elrendezés visszaállítása” az alapértelmezettre állítja vissza a sorrendet.
+* **Emlékezet:** a panel-sorrendet, az összecsukott állapotot és a napló helyét a program a `settings.db`-ben tárolja, tehát a következő indításkor ugyanígy nyílik meg.
+
 ### Billentyűparancsok
 
 | Billentyű | Művelet |
@@ -191,3 +199,4 @@ A **Kész** gomb — és az ablak X-e — azonnal elment, szerkesztés közben p
 | `Ctrl+,` | beállítások |
 | `Ctrl+F` | fókusz a kulcsszó mezőre (törléssel) |
 | `Esc` | beállítások bezárása, illetve a monitor leállítása |
+| görgő a lapon | a lap görgetése (a napló/táblázat fölött azok görgetnek) |

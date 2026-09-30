@@ -66,8 +66,19 @@ GRID_BG     = "#F2F5F8"
 FONT  = "Segoe UI"
 F_MAIN = FONT
 
-LOG_W = 380      # napló panel szélessége
+LOG_W = 380      # napló panel szélessége (oldalt dokkolva)
+LOG_H = 250      # napló panel magassága (alul dokkolva)
 LOG_HINT = 60    # rail szélesség összecsukva
+
+LOG_DOCKS = ("right", "left", "bottom", "hidden")
+
+RESULTS_MIN = 110    # a találati táblázat legkisebb magassága (kis ablaknál)
+RESULTS_MAX = 640    # és legnagyobb magassága
+WHEEL_STEP = 3       # egy görgő-kattintás hány "egységet" ugrik
+
+# Ezek a widgetek maguk görgetnek a mouse wheelre, ezért felettük a lapot
+# nem szabad görgetni — különben kettős görgetés lenne.
+_WHEEL_OWNERS = {"Text", "Treeview", "Listbox", "TListbox", "TSpinbox"}
 
 # A chip-sor ajánlott sorrendje — ismeretlen facet code-ok a végére kerülnek
 CHIP_ORDER = ["brand", "size", "color", "material", "status", "patterns",
@@ -77,6 +88,7 @@ DISCORD_KEY = "discord_webhook"
 KEEP_HISTORY_KEY = "keep_history"
 DESKTOP_KEY = "desktop_notify"
 HISTORY_NOTIFY_KEY = "desktop_on_new"
+LAYOUT_KEY = "layout"
 
 
 class UI:
@@ -804,13 +816,116 @@ class ResultsPanel:
                      when=(r.get("first_seen") or "")[-8:], is_new=False)
 
 
+class Panel(tk.Frame):
+    """Újrarendezhető és összecsukható kártya.
+
+    A fejléc fogantyúját (`⠿`) vagy a címét meghúzva a panel máshová
+    hurcolható a többi panel között; a `▾` gomb összecsukja. A sorrend,
+    az összecsukott állapot és a napló dokkolása a `settings.db`-be kerül,
+    így a következő indításkor ugyanígy jön vissza.
+    """
+
+    def __init__(self, master, gui, key, title):
+        super().__init__(master, bg=CARD, highlightbackground=BORDER,
+                         highlightthickness=1)
+        self.gui = gui
+        self.key = key
+        self._collapsed = False
+        self._fixed = False
+        self._height = 0
+
+        self.header = tk.Frame(self, bg=CARD)
+        self.header.pack(fill=X, padx=6, pady=(9, 0))
+
+        self.grip = tk.Label(self.header, text="⠿", bg=CARD, fg="#AFBCCB",
+                             font=(FONT, 13), cursor="fleur", padx=3)
+        self.grip.pack(side=LEFT)
+
+        self.title_label = tk.Label(self.header, text=title.upper(), bg=CARD,
+                                    fg=ACCENT_DK, font=(FONT, 10, "bold"))
+        self.title_label.pack(side=LEFT, padx=(6, 10))
+
+        # A chevron csak összecsuk, nem indít húzást — így a kattintás és a
+        # fogantyú nem versenyez egymással.
+        self.collapse_btn = tk.Label(self.header, text="▾", bg=CARD, fg=MUTED,
+                                     font=(FONT, 12), cursor="hand2", padx=6)
+        self.collapse_btn.pack(side=RIGHT)
+        self.collapse_btn.bind("<Button-1>", lambda _e: self.toggle())
+
+        self.body = tk.Frame(self, bg=CARD, padx=18, pady=14)
+        self.body.pack(fill=BOTH, expand=True)
+
+        for w in (self.grip, self.title_label):
+            w.bind("<ButtonPress-1>", self._drag_start)
+            w.bind("<B1-Motion>", self._drag_move)
+            w.bind("<ButtonRelease-1>", self._drag_end)
+            w.bind("<Escape>", self._drag_cancel)
+            w.configure(cursor="fleur")
+
+    # ── drag & drop ───────────────────────────────────────────────────────
+
+    def _drag_start(self, event):
+        self.gui._panel_drag_start(self, event)
+
+    def _drag_move(self, _event):
+        self.gui._panel_drag_move()
+
+    def _drag_end(self, _event):
+        self.gui._panel_drag_end()
+
+    def _drag_cancel(self, _event):
+        self.gui._panel_drag_cancel()
+
+    # ── collapse / size ───────────────────────────────────────────────────
+
+    def toggle(self):
+        if self._collapsed:
+            self.body.pack(fill=BOTH, expand=True)
+            self.collapse_btn.configure(text="▾")
+            self._collapsed = False
+            if self._fixed:
+                self.pack_propagate(False)
+                self.configure(height=self._height)
+            else:
+                # tartalom-vezérelt magasság: pl. a figyeléslista nő néhány sorral
+                self.pack_propagate(True)
+        else:
+            self._height = self.winfo_reqheight()
+            self.body.pack_forget()
+            # A fejléc magasságára zsugorodik; pack_propagate nélkül a
+            # Tk nem venné figyelembe a kért magasságot.
+            self.pack_propagate(False)
+            self.configure(height=self.header.winfo_reqheight() + 11)
+            self.collapse_btn.configure(text="▸")
+            self._collapsed = True
+        self.gui._layout_changed()
+
+    def set_collapsed(self, collapsed):
+        if bool(collapsed) != self._collapsed:
+            self.toggle()
+
+    def set_body_height(self, height):
+        """Rögzíti a panel magasságát (a tartalom nem terjedhet túl rajta)."""
+        if self._collapsed or height <= 0:
+            return
+        self._fixed = True
+        self._height = int(height)
+        self.pack_propagate(False)
+        self.configure(height=self._height)
+
+    def release_height(self):
+        self._fixed = False
+        self._height = 0
+        self.pack_propagate(True)
+
+
 class VintedMonitorGUI:
     def __init__(self, root):
         self.root = root
         UI.init(root)
         self.root.title("Vinted Price Monitor")
         self.root.geometry("1280x940")
-        self.root.minsize(1040, 760)
+        self.root.minsize(880, 560)
         self.root.configure(bg=BG)
 
         self.worker_thread = None
@@ -820,10 +935,22 @@ class VintedMonitorGUI:
         self._control_q = queue.Queue()
         self._result_q = queue.Queue()
         self.settings_win = None
-        self._log_open = True
         self._loading_win = None
         self._catalog_url = None
         self._catalog_lookup = None      # cache a kategórianevekre
+
+        # elrendezés (görgethető lap + átrendezhető panelek)
+        self._panels = {}
+        self._panel_order = []
+        self._dock_var = StringVar(value="right")
+        self._log_dock = "right"
+        self._last_dock = "right"
+        self._drag = None
+        self._drag_line = None
+        self._fitting = False
+        self._order, self._collapsed_panels, dock = self._load_layout()
+        self._log_dock = self._last_dock = dock
+        self._dock_var.set(dock)
 
         self.selected = {"catalog": []}
         self.filter_options = {}
@@ -836,11 +963,11 @@ class VintedMonitorGUI:
         self._found = 0
         self.watches = []
         self._editing = None
+        self._closing = False
+        self._after_jobs = set()
 
         self._build_ui()
         self._update_clear_btn()
-        self._closing = False
-        self._after_jobs = set()
         self._poll_log_queue()
         self._poll_filters_result()
         self._poll_control()
@@ -911,13 +1038,195 @@ class VintedMonitorGUI:
         return tk.Frame(parent, bg=CARD, highlightbackground=BORDER,
                         highlightthickness=1, **kw)
 
-    def _section_title(self, parent, text):
-        row = tk.Frame(parent, bg=CARD)
-        row.pack(fill=X, pady=(0, 10))
-        tk.Label(row, text=text.upper(), bg=CARD, fg=ACCENT_DK,
-                 font=(FONT, 10, "bold")).pack(side=LEFT)
-        tk.Frame(row, bg=BORDER, height=1).pack(fill=X, side=LEFT,
-                                                expand=True, padx=10)
+    # ── Elrendezés: panel-sorrend, dokkolás, perzisztencia ──────────────────
+
+    PANEL_KEYS = ("search", "watches", "results")
+
+    def _load_layout(self):
+        """Az elrendezés visszaolvasása a settings.db-ből.
+
+        A hiányzó vagy ismeretlen kulcsokat eldobjuk, a panellistát a
+        `PANEL_KEYS` egészével egészítjük ki, így egy új verzió hozzáadott
+        panele sem töri el a mentett elrendezést.
+        """
+        data = {}
+        raw = load_setting(LAYOUT_KEY, "")
+        if raw:
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+
+        order = [k for k in data.get("order", []) if k in self.PANEL_KEYS]
+        for key in self.PANEL_KEYS:
+            if key not in order:
+                order.append(key)
+
+        collapsed = {k for k in data.get("collapsed", []) if k in order}
+        dock = data.get("log")
+        if dock not in LOG_DOCKS:
+            dock = "right"
+        return order, collapsed, dock
+
+    def _save_layout(self):
+        save_setting(LAYOUT_KEY, json.dumps({
+            "order": list(self._panel_order),
+            "collapsed": sorted(k for k, p in self._panels.items()
+                                if p._collapsed),
+            "log": self._log_dock,
+        }, ensure_ascii=False))
+
+    def _reset_layout(self):
+        """Visszaállítás az alapértelmezett sorrendre és dokkolásra."""
+        self._panel_order = list(self.PANEL_KEYS)
+        for panel in self._panels.values():
+            panel.set_collapsed(False)
+            panel.release_height()
+        self._log_dock = self._last_dock = "right"
+        self._dock_var.set("right")
+        self._apply_panel_order()
+        self._apply_log_dock()
+        self._save_layout()
+        self._log("[dim] Elrendezés visszaállítva az alapértelmezettre.")
+
+    def _apply_panel_order(self):
+        panels = [self._panels[k] for k in self._panel_order if k in self._panels]
+        for panel in panels:
+            panel.pack_forget()
+        for panel in panels:
+            panel.pack(fill=X, pady=(0, 12))
+        self._layout_changed()
+
+    # ── Húzogatás ──────────────────────────────────────────────────────────
+
+    def _panel_drag_start(self, panel, _event):
+        if self._closing:
+            return
+        self._drag = {"key": panel.key, "insert": None}
+        self._drag_line = tk.Frame(panel.master, bg=ACCENT, height=3,
+                                   highlightthickness=0, borderwidth=0)
+        self._panel_drag_move()
+
+    def _panel_drag_move(self, y=None):
+        """A behúzott kék vonal jelzi, hová csapódna a panel."""
+        if not self._drag or self._drag_line is None or self._closing:
+            return
+        if y is None:
+            y = self.root.winfo_pointery()
+        panels = [self._panels[k] for k in self._panel_order]
+        index = self._drop_index(y)
+        self._drag["insert"] = index
+        self._drag_line.pack_forget()
+        try:
+            if index >= len(panels):
+                self._drag_line.pack(after=panels[-1], fill=X, pady=(4, 2))
+            else:
+                self._drag_line.pack(before=panels[index], fill=X, pady=(4, 2))
+        except tk.TclError:
+            pass
+
+    def _panel_drag_end(self):
+        if not self._drag:
+            return
+        drag = self._drag
+        index = drag.get("insert")
+        key = drag["key"]
+        self._panel_drag_cancel()
+        if index is None:
+            return
+        order = list(self._panel_order)
+        current = order.index(key)
+        if current == index or current == index - 1:
+            return                      # nincs valódi mozgás
+        order.pop(current)
+        order.insert(index - 1 if index > current else index, key)
+        self._panel_order = order
+        self._apply_panel_order()
+        self._save_layout()
+        labels = {"search": "szűrők", "watches": "figyelések",
+                  "results": "találatok"}
+        self._log("[dim] Elrendezés: " + " → ".join(
+            labels.get(k, k) for k in order))
+
+    def _panel_drag_cancel(self):
+        if self._drag_line is not None:
+            try:
+                self._drag_line.pack_forget()
+                self._drag_line.destroy()
+            except tk.TclError:
+                pass
+        self._drag_line = None
+        self._drag = None
+
+    def _drop_index(self, y):
+        """Hová kerül a panel: hányadik helyre csapódna a `y` kurzorpozícióban."""
+        for index, key in enumerate(self._panel_order):
+            panel = self._panels.get(key)
+            if panel is None:
+                continue
+            if y < panel.winfo_rooty() + panel.winfo_height() // 2:
+                return index
+        return len(self._panel_order)
+
+    # ── A napló dokkolása ──────────────────────────────────────────────────
+
+    def _build_dock_menu(self, parent):
+        self.dock_btn = ttk.Menubutton(parent, text="⇄", style="Link.TButton",
+                                       width=3)
+        self.dock_menu = tk.Menu(self.dock_btn, tearoff=0)
+        for value, label in (("right", "Napló → jobbra"),
+                             ("left", "Napló → balra"),
+                             ("bottom", "Napló → alulra"),
+                             ("hidden", "Napló elrejtve")):
+            self.dock_menu.add_radiobutton(
+                label=label, variable=self._dock_var, value=value,
+                command=self._set_log_dock)
+        self.dock_menu.add_separator()
+        self.dock_menu.add_command(
+            label="Elrendezés visszaállítása", command=self._reset_layout)
+        self.dock_btn.configure(menu=self.dock_menu)
+        self.dock_btn.pack(side=RIGHT, padx=(0, 6))
+
+    def _set_log_dock(self, dock=None):
+        dock = dock or self._dock_var.get()
+        if dock not in LOG_DOCKS:
+            return
+        self._log_dock = dock
+        self._dock_var.set(dock)
+        if dock != "hidden":
+            self._last_dock = dock
+        self._apply_log_dock()
+        self._save_layout()
+        names = {"right": "jobbra", "left": "balra", "bottom": "alulra",
+                 "hidden": "elrejtve"}
+        self._log(f"[dim] A napló most {names.get(dock, dock)} van dokkolva.")
+
+    def _apply_log_dock(self):
+        for widget in (self.log_col, self.log_rail, self.canvas_area):
+            try:
+                widget.pack_forget()
+            except tk.TclError:
+                pass
+
+        dock = self._log_dock
+        if dock == "hidden":
+            self.log_rail.pack(side=RIGHT, fill=Y)
+            self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
+        elif dock == "bottom":
+            self.log_col.configure(width=1, height=LOG_H)
+            self.log_col.pack(side=BOTTOM, fill=X, pady=(0, 12))
+            self.canvas_area.pack(side=TOP, fill=BOTH, expand=True)
+        elif dock == "left":
+            self.log_col.configure(width=LOG_W, height=1)
+            self.log_col.pack(side=LEFT, fill=Y, padx=(0, 12))
+            self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
+        else:                                       # right
+            self.log_col.configure(width=LOG_W, height=1)
+            self.log_col.pack(side=RIGHT, fill=Y, padx=(12, 0))
+            self.canvas_area.pack(side=LEFT, fill=BOTH, expand=True)
+        self._layout_changed()
 
     def _build_ui(self):
         header = tk.Frame(self.root, bg=HEADER_BG)
@@ -938,37 +1247,164 @@ class VintedMonitorGUI:
                                                                     padx=(0, 14))
 
         page = tk.Frame(self.root, bg=BG, padx=18)
-        page.pack(fill=BOTH, expand=True)
+        page.pack(fill=BOTH, expand=True, pady=(0, 12))
 
-        content = tk.Frame(page, bg=BG)
-        content.pack(fill=BOTH, expand=True)
-
-        self.log_col = tk.Frame(content, bg=BG, width=LOG_W)
+        # A napló oszlopát a dokkolás helye határozza meg; a többi felület
+        # a jobb/bal szélen van, fölötte a görgethető lap.
+        self.log_col = tk.Frame(page, bg=BG, width=LOG_W)
         self.log_col.pack_propagate(False)
-        self.log_col.pack(side=RIGHT, fill=BOTH, expand=False, padx=(16, 0))
-
-        self.log_rail = tk.Frame(content, bg=BG, width=LOG_HINT)
+        self.log_rail = tk.Frame(page, bg=BG, width=LOG_HINT)
         self.log_rail.pack_propagate(False)
 
-        self.left_col = tk.Frame(content, bg=BG)
-        self.left_col.pack(side=LEFT, fill=BOTH, expand=True)
+        self.canvas_area = tk.Frame(page, bg=BG)
+        self._build_scroll_area()
+        self._build_action_bar()
+
+        # a görgethető lap: minden bal oldali kártya ebbe kerül
+        self.left_col = self.content
 
         self._build_search_card()
         self._build_watch_card()
         self._build_results_card()
-        self._build_action_bar()
         self._build_log_panel()
         self._build_rail()
+
+        self._panel_order = list(self._order)
+        self._apply_panel_order()
+        for key in self._collapsed_panels:
+            panel = self._panels.get(key)
+            if panel:
+                panel.set_collapsed(True)
+        self._apply_log_dock()
         self._build_statusbar()
+
+    # ── Görgethető lap ─────────────────────────────────────────────────────
+
+    def _build_scroll_area(self):
+        self.vscroll = Scrollbar(
+            self.canvas_area, orient="vertical", command=self.canvas_yview,
+            bg=BG, troughcolor=BG, activebackground=ACCENT, borderwidth=0,
+            relief="flat", width=12)
+        self.canvas = Canvas(self.canvas_area, bg=BG, highlightthickness=0,
+                             borderwidth=0, takefocus=0)
+        self.canvas.configure(yscrollcommand=self._on_scroll_region)
+        self.content = tk.Frame(self.canvas, bg=BG)
+        self._canvas_win = self.canvas.create_window(0, 0, window=self.content,
+                                                     anchor=NW)
+
+        self.canvas.pack(side=TOP, fill=BOTH, expand=True)
+        self.content.bind("<Configure>", self._on_content_resize)
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+
+        # A root toplevel-címkéjére kötjük, nem `bind_all`-ra: így a
+        # beállítások és a felugró ablakok fölött nem görgetne a lap.
+        self.root.bind("<MouseWheel>", self._on_wheel)
+
+    def canvas_yview(self, *args):
+        if not self._closing:
+            try:
+                self.canvas.yview(*args)
+            except tk.TclError:
+                pass
+
+    def _on_scroll_region(self, first, last):
+        """A görgetősáv csak akkor látszik, ha tényleg van mit görgetni."""
+        if self._closing:
+            return
+        try:
+            first, last = float(first), float(last)
+        except (TypeError, ValueError):
+            return
+        fits = first <= 0.0 and last >= 1.0
+        try:
+            shown = bool(self.vscroll.winfo_manager())
+        except tk.TclError:
+            return
+        if fits and shown:
+            self.vscroll.pack_forget()
+        elif not fits and not shown:
+            self.vscroll.pack(side=RIGHT, fill=Y, padx=(8, 0), before=self.canvas)
+        if not fits:
+            self.vscroll.set(first, last)
+
+    def _on_content_resize(self, _event=None):
+        if self._closing:
+            return
+        try:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except tk.TclError:
+            pass
+
+    def _on_canvas_resize(self, event):
+        if self._closing:
+            return
+        try:
+            self.canvas.itemconfigure(self._canvas_win, width=event.width)
+        except tk.TclError:
+            return
+        self._fit_results(event.height)
+
+    def _on_wheel(self, event):
+        """A lap görgetése a mouse wheelrel.
+
+        A `Text` (napló) és a `Treeview` (találatok) maga görget, fölöttük
+        ezért nem nyúlunk hozzá — különben egy kattintás kétszer menne.
+        """
+        if self._closing:
+            return
+        try:
+            if event.widget.winfo_class() in _WHEEL_OWNERS:
+                return
+            steps = event.delta / 120.0 * WHEEL_STEP
+            if 0 < abs(steps) < WHEEL_STEP:
+                steps = WHEEL_STEP if steps > 0 else -WHEEL_STEP
+            if steps:
+                self.canvas.yview_scroll(-int(steps), "units")
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _fit_results(self, available):
+        """A maradék helyet a találati táblázat kapja meg."""
+        if self._fitting or self._closing:
+            return
+        panel = self._panels.get("results")
+        if panel is None or available <= 1:
+            return
+        self._fitting = True
+        try:
+            used = sum(p.winfo_reqheight() for k, p in self._panels.items()
+                       if k != "results" and not p._collapsed)
+            budget = available - used - 16
+            # A táblázat pontosan a maradék helyet kapja (min. RESULTS_MIN),
+            # így alapablaknál nincs sikamlós 20-30 px-es görgetés; ha az
+            # ablak kicsi, akkor viszont a lap görgethető marad.
+            height = min(max(budget, RESULTS_MIN), RESULTS_MAX)
+            if abs(height - panel.winfo_height()) >= 4:
+                panel.set_body_height(height)
+        finally:
+            self._fitting = False
+
+    def _layout_changed(self):
+        """Panel mozgatása/összecsukása után újra kell számolni a méreteket."""
+        self._on_content_resize()
+        try:
+            self._fit_results(self.canvas.winfo_height())
+        except tk.TclError:
+            pass
+
+    # ── Search card ─────────────────────────────────────────────────────────
+
+    def _add_panel(self, key, title):
+        """Létrehoz egy újrarendezhető kártyát a bal oldali panelek közé."""
+        panel = Panel(self.left_col, self, key, title)
+        self._panels[key] = panel
+        return panel
 
     # ── Search card ─────────────────────────────────────────────────────────
 
     def _build_search_card(self):
-        card = self._card(self.left_col)
-        card.pack(fill=X, pady=(16, 0))
-        body = tk.Frame(card, bg=CARD, padx=18, pady=16)
-        body.pack(fill=X)
-        self._section_title(body, "Kereső szűrők")
+        card = self._add_panel("search", "Kereső szűrők")
+        body = card.body
 
         r1 = tk.Frame(body, bg=CARD)
         r1.pack(fill=X, pady=(0, 12))
@@ -1081,17 +1517,12 @@ class VintedMonitorGUI:
     # ── Watches card ────────────────────────────────────────────────────────
 
     def _build_watch_card(self):
-        card = self._card(self.left_col)
-        card.pack(fill=X, pady=(12, 0))
-        body = tk.Frame(card, bg=CARD, padx=18, pady=14)
-        body.pack(fill=X)
-        head = tk.Frame(body, bg=CARD)
-        head.pack(fill=X, pady=(0, 8))
-        tk.Label(head, text="FIGYELÉSEK", bg=CARD, fg=ACCENT_DK,
-                 font=(FONT, 10, "bold")).pack(side=LEFT)
+        card = self._add_panel("watches", "Figyelések")
+        body = card.body
+        head = card.header
         self.watch_count = tk.Label(head, text="(0)", bg=CARD, fg=MUTED,
                                     font=(FONT, 9))
-        self.watch_count.pack(side=LEFT, padx=(8, 0))
+        self.watch_count.pack(side=RIGHT, padx=(0, 6))
         ttk.Button(head, text="+ Hozzáadás", style="Link.TButton",
                    command=self.add_watch).pack(side=RIGHT)
 
@@ -1192,20 +1623,15 @@ class VintedMonitorGUI:
     # ── Results card ────────────────────────────────────────────────────────
 
     def _build_results_card(self):
-        card = self._card(self.left_col)
-        card.pack(fill=BOTH, expand=True, pady=(12, 0))
-        body = tk.Frame(card, bg=CARD, padx=18, pady=14)
-        body.pack(fill=BOTH, expand=True)
-        head = tk.Frame(body, bg=CARD)
-        head.pack(fill=X, pady=(0, 8))
-        tk.Label(head, text="TALÁLATOK", bg=CARD, fg=ACCENT_DK,
-                 font=(FONT, 10, "bold")).pack(side=LEFT)
+        card = self._add_panel("results", "Találatok")
+        body = card.body
+        head = card.header
         self.result_count = tk.Label(head, text="0 sor", bg=CARD, fg=MUTED,
                                      font=(FONT, 9))
-        self.result_count.pack(side=LEFT, padx=(8, 0))
+        self.result_count.pack(side=RIGHT, padx=(0, 6))
         ttk.Button(head, text="Frissítés", style="Link.TButton",
                    command=self.reload_results).pack(side=RIGHT)
-        ttk.Button(head, text="Táblázat ürítése", style="Link.TButton",
+        ttk.Button(head, text="Ürítés", style="Link.TButton",
                    command=self._clear_results).pack(side=RIGHT, padx=(0, 6))
 
         self.results = ResultsPanel(body, on_open=self._open_item)
@@ -1247,8 +1673,9 @@ class VintedMonitorGUI:
     # ── Action bar & log ────────────────────────────────────────────────────
 
     def _build_action_bar(self):
-        actions = tk.Frame(self.left_col, bg=BG)
-        actions.pack(fill=X, pady=(12, 16))
+        actions = tk.Frame(self.canvas_area, bg=BG)
+        self.action_bar = actions
+        actions.pack(side=BOTTOM, fill=X, pady=(14, 0))
         self.start_btn = ttk.Button(actions, text="▶  Indítás", style="Accent.TButton",
                                     command=self.toggle_monitoring)
         self.start_btn.pack(side=LEFT)
@@ -1260,7 +1687,7 @@ class VintedMonitorGUI:
 
     def _build_log_panel(self):
         log_card = self._card(self.log_col)
-        log_card.pack(fill=BOTH, expand=True, pady=(16, 16))
+        log_card.pack(fill=BOTH, expand=True)
         lg = tk.Frame(log_card, bg=CARD, padx=16, pady=16)
         lg.pack(fill=BOTH, expand=True)
 
@@ -1270,6 +1697,7 @@ class VintedMonitorGUI:
                  font=(FONT, 10, "bold")).pack(side=LEFT)
         ttk.Button(head, text="−  Elrejt", style="Soft.TButton", width=8,
                    command=self._toggle_log).pack(side=RIGHT)
+        self._build_dock_menu(head)
 
         self.log_text = Text(
             lg, wrap="word", state="disabled",
@@ -1293,7 +1721,7 @@ class VintedMonitorGUI:
 
     def _build_rail(self):
         rail_card = self._card(self.log_rail)
-        rail_card.pack(fill=BOTH, expand=True, pady=(16, 16))
+        rail_card.pack(fill=BOTH, expand=True)
         ttk.Button(rail_card, text="Napló\n▸", style="Ghost.TButton",
                    command=self._toggle_log).pack(fill=X, padx=6, pady=6)
 
@@ -1343,16 +1771,11 @@ class VintedMonitorGUI:
         self.settings_win.focus_force()
 
     def _toggle_log(self):
-        self.log_col.pack_forget()
-        self.log_rail.pack_forget()
-        self.left_col.pack_forget()
-        if self._log_open:
-            self._log_open = False
-            self.log_rail.pack(side=RIGHT, fill=Y, expand=False, padx=(16, 0))
+        """Ctrl+L: a napló elrejtése, illetve az előző dokkolás visszaállítása."""
+        if self._log_dock == "hidden":
+            self._set_log_dock(self._last_dock or "right")
         else:
-            self._log_open = True
-            self.log_col.pack(side=RIGHT, fill=BOTH, expand=False, padx=(16, 0))
-        self.left_col.pack(side=LEFT, fill=BOTH, expand=True)
+            self._set_log_dock("hidden")
 
     def _set_status(self, color, text, sub=None):
         self.status_dot.itemconfig(self._status_ball, fill=color)
