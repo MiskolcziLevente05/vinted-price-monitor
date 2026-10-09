@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 
 # ─── Market & API constants ─────────────────────────────────────────────────
 
-VERSION = "0.9"
+VERSION = "1.0"
 
 MARKET_URL = "https://www.vinted.hu"
 _API_HOST = "https://api.vinted.hu/svc-filters"
