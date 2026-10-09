@@ -248,3 +248,20 @@ hozzáadása a jövőben egyetlen szótár-bejegyzés.
 | dupla kattintás | figyelés szerkesztése, illetve találat megnyitása böngészőben |
 | jobb gomb | figyelés menü (Szerkesztés / Törlés) |
 | görgő a modulon | a modul görgetése (a napló/táblázat fölött azok görgetnek) |
+
+---
+
+## ✅ Tesztek
+
+Két önálló teszt-csomag van, egyik sem igényel hálózatot, böngészt, vagy a
+valódi adatbázisokat:
+
+| Csomag | Fedettség | Futtatás |
+|--------|-----------|----------|
+| `test_core.py` | az üzleti logika: URL-építés, repülő-adat parser, ár-normalizálás, szűrő-képzés, beállítás- és adatbázis-kezelés, a ciklus és a Discord-küldő (~130 teszt) | `py -m unittest test_core` |
+| `test_gui.py` | a felület valódi Tk ablakkal: elrendezés, görgetés, modul-váltás, chip-ek, felugró ablakok, téma, indulás (~170 teszt) | `py -m unittest test_gui` |
+
+A GUI-tesztek átlátszó ablakban futnak, a `settings.db` és a
+`vinted_monitor.db` útvonalát pedig ideiglenes könyvtárra írják át, így a
+két fájl tartalma a futás után érintetlen marad. A hálózati és
+adatbázis-hívásokat a tesztek stubbolják — a böngésző-pool nem indul el.

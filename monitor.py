@@ -65,10 +65,6 @@ _API_HEADERS = {
     "x-requested-with": "XMLHttpRequest",
 }
 
-# Kept for callers that want the old global switch behaviour.
-DISCORD_ENABLED = True
-MIN_PRICE = 0
-
 ORDER_OPTIONS = [
     ("relevance", "Relevancia"),
     ("newest_first", "Legújabb"),
@@ -296,17 +292,6 @@ class BrowserPool:
             self._idle.clear()
             self._cond.notify_all()
 
-    def reset(self):
-        """Allow pooling again after `shutdown()` (used when monitoring
-        restarts within the same process)."""
-        with self._cond:
-            self._closed = False
-
-    @property
-    def idle_count(self):
-        with self._cond:
-            return len(self._idle)
-
 
 _POOL = BrowserPool(max_size=2)
 
@@ -489,41 +474,6 @@ def _extract_flight_json(html, key):
     return None
 
 
-def _extract_catalog_filters(html):
-    """Extract the lazy facet set (code -> {title, options}) from a catalog
-    page. Retained as a fallback for when the svc-filters API is unreachable."""
-    payload = _flight_payload(html)
-    result = {}
-    if '"is_async_facet"' not in payload:
-        return result
-    for m in re.finditer(
-            r'"id":\d+,"title":"((?:[^"\\]|\\.)*)","code":"([a-z_]+)"', payload):
-        title, code = m.group(1), m.group(2)
-        after = payload[m.end():]
-        opt = after.find('"options"')
-        iaf = after.find('"is_async_facet"')
-        if opt < 0 or iaf < 0 or opt > iaf:
-            continue
-        arr = after.find("[", opt + 9)
-        if arr < 0:
-            continue
-        seg = _match_bracket(after, arr)
-        pairs = []
-        if seg:
-            try:
-                opts = json.loads(seg)
-            except (ValueError, json.JSONDecodeError):
-                opts = None
-            for o in opts or []:
-                if isinstance(o, dict) and o.get("id") is not None:
-                    pairs.append((o["id"], o.get("title") or ""))
-        if code not in result:
-            result[code] = {"title": title, "options": pairs}
-    return result
-
-
-# ─── Item normalisation ─────────────────────────────────────────────────────
-
 def _split_size_status(line):
     """Split an itemBox second line into (size, status).
 
@@ -545,8 +495,11 @@ def _split_size_status(line):
 
 
 def _amount(value):
+    """Az API szóközöket (a magyar formátum vékony szóközt is) tartalmazó
+    összeget float-vá alakít; értékelen bemenetre `None`-t ad."""
     try:
-        return float(str(value).replace(",", "."))
+        clean = str(value).replace("\xa0", "").replace(" ", "")
+        return float(clean.replace(",", "."))
     except (TypeError, ValueError):
         return None
 
@@ -622,7 +575,7 @@ def parse_listings(html):
     """DOM fallback for item extraction, used when the payload has no items."""
     soup = BeautifulSoup(html, "html.parser")
     items = []
-    for card in soup.select('[data-testid^="grid-item"]'):
+    for card in soup.select('[data-testid="grid-item"]'):
         try:
             anchor = card.find("a", href=re.compile(r"/items/\d+"))
             if not anchor:
@@ -870,20 +823,6 @@ def save_setting(key, value):
         return False
 
 
-def delete_setting(key):
-    """Remove a persisted setting."""
-    try:
-        conn = _settings_conn()
-        try:
-            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
-            conn.commit()
-        finally:
-            conn.close()
-        return True
-    except sqlite3.Error:
-        return False
-
-
 def load_bool(key, default=False):
     value = load_setting(key, None)
     if value is None:
@@ -910,8 +849,6 @@ class DiscordSender:
         self.min_interval = min_interval
         self._last = 0.0
         self._lock = threading.Lock()
-        self.sent = 0
-        self.failed = 0
 
     @property
     def configured(self):
@@ -957,7 +894,6 @@ class DiscordSender:
             try:
                 resp = requests.post(self.url, json=payload, timeout=15)
             except requests.RequestException as e:
-                self.failed += 1
                 log(f"[err] Discord küldés sikertelen ({item.get('id')}): {e}")
                 return False
 
@@ -972,11 +908,9 @@ class DiscordSender:
             return self.send(item)
 
         if not resp.ok:
-            self.failed += 1
             log(f"[err] Discord HTTP {resp.status_code}: {resp.text[:160]}")
             return False
 
-        self.sent += 1
         return True
 
     def send_note(self, text):
@@ -994,11 +928,6 @@ class DiscordSender:
                 log(f"[err] Discord jegyzet sikertelen: {e}")
                 return False
         return resp.ok
-
-
-def send_discord_alert(webhook_url, item):
-    """Send a single alert (kept for backwards compatibility)."""
-    return DiscordSender(webhook_url).send(item)
 
 
 def check_webhook_format(url):
@@ -1210,18 +1139,6 @@ def fetch_category_filters(cat_url=None, catalog_id=None):
     return filters
 
 
-def fetch_facet_options(search_text="", catalog_ids=None, facet_codes=None):
-    """Best-effort fetch of facet options. Returns {code: [(id, title)]}."""
-    catalog_ids = [str(c) for c in (catalog_ids or []) if c]
-    codes = list(facet_codes or ()) or list(_COMMON_FACETS)
-    result = {}
-    for code in codes:
-        pairs = _facet_pairs(code, catalog_ids, search_text=search_text)
-        if pairs:
-            result[code] = pairs
-    return result
-
-
 def fetch_brands(keyword, catalog_ids=None):
     """Search brands on Vinted; returns a list of (id, title) tuples."""
     keyword = (keyword or "").strip()
@@ -1297,22 +1214,6 @@ class Watch:
     pages: int = 1
     discord: bool = True
     desktop: bool = False
-
-    def to_dict(self):
-        return {"name": self.name, "url": self.url, "min_price": self.min_price,
-                "pages": self.pages, "discord": self.discord,
-                "desktop": self.desktop}
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(
-            name=str(data.get("name") or "Monitor"),
-            url=str(data.get("url") or ""),
-            min_price=float(data.get("min_price") or 0),
-            pages=max(1, int(data.get("pages") or 1)),
-            discord=bool(data.get("discord", True)),
-            desktop=bool(data.get("desktop", False)),
-        )
 
 
 @dataclass

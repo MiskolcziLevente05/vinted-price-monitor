@@ -21,7 +21,7 @@ import webbrowser
 import tkinter as tk
 from tkinter import ttk
 from tkinter import (
-    X, Y, BOTH, LEFT, RIGHT, END, W, E, NW, CENTER,
+    X, Y, BOTH, LEFT, RIGHT, END, W, E, CENTER,
     Canvas, Toplevel, Scrollbar, Text, StringVar, BooleanVar, IntVar,
     messagebox,
 )
@@ -120,7 +120,6 @@ def _recolor_widgets(widget, old_map):
             for child in widget.winfo_children():
                 _recolor_widgets(child, old_map)
             return
-        cls = widget.winfo_class()
     except tk.TclError:
         return
     for opt in ("background", "foreground", "highlightbackground",
@@ -155,8 +154,12 @@ WHEEL_STEP = 3       # egy görgő-kattintás hány "egységet" ugrik
 # listája alatta. Ennyi figyelésnek adunk garantált helyet — ha az ablak
 # ennél alacsonyabb, a zsugorodást a nagy űrlap viseli (és görget), a
 # lista megőrzi a használható magasságát.
-WATCH_ROW_H = 48     # egy figyelés-sor magassága
-MIN_WATCH_AREA_H = 3 * WATCH_ROW_H + 40   # három sor + a lista címsora
+# A magasságok a ténylegesen kirajzolt elemekből származnak (a sor: név +
+# leírás + hézag, a fejléc: elválasztó + címsor + súgó), nem becslés — ha a
+# blokk felépítése változik, a `test_gui` méri is, és hibázik, ha elcsúszik.
+WATCH_ROW_H = 55     # egy figyelés-sor magassága
+WATCH_HEAD_H = 73    # a figyelések blokk fix fejléce, a lista nélkül
+MIN_WATCH_AREA_H = 3 * WATCH_ROW_H + WATCH_HEAD_H
 
 # Ezek a widgetek maguk görgetnek a mouse wheelre, ezért felettük a modul
 # lapját nem szabad görgetni — különben kettős görgetés lenne.
@@ -552,7 +555,12 @@ class MultiSelectPopup(Toplevel):
         self.status_var = StringVar()
         ttk.Label(body, textvariable=self.status_var, style="Muted.TLabel",
                   anchor=W).pack(fill=X, pady=(6, 0))
-        self._build_options_box(body)
+
+        # A ScrollFrame adja a görgetést; a sáv csak akkor jelenik meg, ha a
+        # lista nem fér el (a kereső-mező fölött nem görget).
+        self.box = ScrollFrame(body, bg=CARD)
+        self.box.pack(fill=BOTH, expand=True, pady=(6, 0))
+        self.inner = self.box.inner
         self._refresh()
 
         bar = tk.Frame(self, bg=CARD)
@@ -562,31 +570,6 @@ class MultiSelectPopup(Toplevel):
         ttk.Button(bar, text="Mégse", style="Soft.TButton",
                    command=self.destroy).pack(side=RIGHT)
         self.after(100, self._poll_result)
-
-    def _build_options_box(self, parent):
-        self.box_frame = tk.Frame(parent, bg=CARD)
-        self.box_frame.pack(fill=BOTH, expand=True, pady=(6, 0))
-        canvas = Canvas(self.box_frame, bg=CARD, highlightthickness=0)
-        scroll = Scrollbar(self.box_frame, orient="vertical", command=canvas.yview)
-        self.inner = tk.Frame(canvas, bg=CARD)
-        self.inner.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side=RIGHT, fill=Y)
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        canvas.bind("<Enter>", lambda e: self._bind_mousewheel(canvas))
-        canvas.bind("<Leave>", lambda e: self._unbind_mousewheel(canvas))
-        self.canvas = canvas
-
-    def _bind_mousewheel(self, canvas):
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
-
-    def _unbind_mousewheel(self, canvas):
-        canvas.unbind_all("<MouseWheel>")
 
     def _refresh(self):
         kw = self.search_var.get().strip().lower()
@@ -605,6 +588,9 @@ class MultiSelectPopup(Toplevel):
         if seen == 0:
             ttk.Label(self.inner, text="Nincs találat.",
                       style="Muted.TLabel").pack(anchor=W, padx=2, pady=4)
+        # a tartalom újrarajzolása után a vászon ablak-elemének méretét is
+        # újra kell venni, különben a görgetősáv a régi magassághoz marad
+        self.box.refresh(settle=True)
 
     def _search(self):
         kw = self.search_var.get().strip()
@@ -1102,7 +1088,7 @@ class SettingsWindow(Toplevel):
         info.pack(fill=X, pady=(16, 0))
         tk.Label(info, text=(
             "A kategória kiválasztásakor a szűrők (facetek) automatikusan\n"
-            "betöltődnek élő Vinted adatokból — böngésző nélkül, az API-ról.\n\n"
+            "betöltődnek élő Vinted adatokból.\n\n"
             "A webhook és a beállítások a settings.db-be mentődnek.\n"
             "Üres webhook esetén a Discord értesítés kimarad."),
             bg=ACCENT_LT, fg=TEXT, font=(FONT, 9), wraplength=460,
@@ -1117,11 +1103,16 @@ class SettingsWindow(Toplevel):
         """Élő webhook-ellenőrzés külön szálon, hogy a GUI ne fagyjon."""
         self.test_status.configure(text="Tesztelés…", fg=MUTED)
         self.gui._save_webhook()
+        # a változót és a szál indítását is a fő szálban csináljuk: a Tk
+        # nem szál-biztos, szálon belül sem `after`-, sem változóolvasás
+        url = self.gui.webhook_var.get().strip()
 
         def worker():
-            ok, msg = test_webhook(self.gui.webhook_var.get().strip())
-            self.gui.after(0, lambda: self.test_status.configure(
-                text=msg, fg=GREEN if ok else RED))
+            try:
+                result = test_webhook(url)
+            except Exception as e:
+                result = (False, f"Nem sikerült elküldeni: {e}")
+            self.gui._filters_result_q.put(("webhook", result))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1143,10 +1134,10 @@ class SettingsWindow(Toplevel):
 # az űrlap- és lista-állapotok a lapozás során is megmaradnak.
 
 class Module:
-    """A modulok közös váza: kártya + fejléc-sáv + tartalom.
+    """A modulok közös váka: kártya + fejléc-sáv + tartalom.
 
     A leszármazottak a `_build()`-ban építik a tartalmat az
-    `self.body` keretbe, és a `gui`-n keresztül érik el a közös állapotot.
+    `self.inner` keretbe, és a `gui`-n keresztül érik el a közös állapotot.
     """
 
     key = ""          # a modul azonosítója (a sáv-navigáció kulcsa)
@@ -1163,7 +1154,6 @@ class Module:
         card.pack(fill=BOTH, expand=True)
         self.inner = tk.Frame(card, bg=CARD, padx=18, pady=16)
         self.inner.pack(fill=BOTH, expand=True)
-        self.body = None
         self._build()
 
     def _head(self):
@@ -1226,7 +1216,6 @@ class SearchModule(Module):
         form_scroll = ScrollFrame(grid, bg=CARD)
         form_scroll.grid(row=0, column=0, sticky="nsew")
         form_scroll.fit_height = True
-        self.gui._form_scroll = form_scroll
         form_wrap = form_scroll.inner
         # `add="+"`: a ScrollFrame is köt erre az eseményre
         form_wrap.bind("<Configure>", self.gui._on_form_resize, add="+")
@@ -1475,7 +1464,6 @@ class VintedMonitorGUI:
         self._result_q = queue.Queue()
         self.settings_win = None
         self._loading_win = None
-        self._catalog_url = None
         self._catalog_lookup = None      # cache a kategórianevekre
 
         # aktív nézet (a sáv-navigáció), perzisztálva a settings.db-ben
@@ -1801,7 +1789,6 @@ class VintedMonitorGUI:
         self.filter_options = {}
         self.facet_titles = {}
         self.facet_codes = []
-        self._catalog_url = None
         self._rebuild_chips()
         self.search_text_var.set("")
         self.price_from_var.set("")
@@ -1862,8 +1849,10 @@ class VintedMonitorGUI:
             tk.Label(top, text=w["name"], bg=bg, fg=TEXT,
                      font=(FONT, 10, "bold"), anchor=W).pack(
                 side=LEFT, fill=X, expand=True)
-            detail_bits = [f"{w.get('pages') or 1} oldal",
-                           f"min. {int(w.get('min_price') or 0)} Ft"]
+            detail_bits = [f"{w.get('pages') or 1} oldal"]
+            # a nulla Ft nem hírértékű: csak a valódi minimum látszik
+            if w.get("min_price"):
+                detail_bits.append(f"min. {int(w['min_price'])} Ft")
             if not w.get("discord"):
                 detail_bits.append("discord: ki")
             tk.Label(top, text=" · ".join(detail_bits), bg=bg, fg=MUTED,
@@ -1935,8 +1924,8 @@ class VintedMonitorGUI:
         self._editing = None
         self._render_watches()
         self._save_watches()
-        self._log(f"[ok] Figyelés hozzáadva: „{name}” — {watch['pages']} oldal, "
-                  f"min. {int(watch['min_price'])} Ft")
+        self._log(f"[ok] Figyelés hozzáadva: „{name}” — "
+                  f"{self._describe_watch(watch)}")
         if watch["desc"]:
             self._log(f"[dim] Leírás: {watch['desc']}")
 
@@ -1946,8 +1935,8 @@ class VintedMonitorGUI:
         w = self.watches[idx]
         self._load_params_into_form(w.get("params") or {})
         self._editing = idx
-        self.min_price_var.set(str(int(w["min_price"])))
-        self.pages_var.set(w["pages"])
+        self.min_price_var.set(str(int(w.get("min_price") or 0)))
+        self.pages_var.set(w.get("pages") or 1)
         self._render_watches()
         self._log(f"[i] „{w['name']}” szerkesztése — "
                   "a szűrők az űrlapba lettek betöltve.")
@@ -2005,7 +1994,12 @@ class VintedMonitorGUI:
         self._log(f"[dim] Figyelés törölve: „{name}”")
 
     def _next_watch_name(self):
-        return f"Figyelés {len(self.watches) + 1}"
+        """A legkisebb szabad sorszám — törölés után nem ismétlődik a név."""
+        taken = {w.get("name") for w in self.watches}
+        n = 1
+        while f"Figyelés {n}" in taken:
+            n += 1
+        return f"Figyelés {n}"
 
     # ── Leírás-generálás ────────────────────────────────────────────────────
 
@@ -2229,8 +2223,12 @@ class VintedMonitorGUI:
         if not opts and key != "brand":
             messagebox.showinfo("Info", "Ehhez a szűrőhöz nincs betöltött opció.")
             return
-        on_search = (lambda kw: fetch_brands(kw, self.selected.get("catalog") or [])
-                     if key == "brand" else None)
+        on_search = None
+        if key == "brand":
+            # csak a márkánál van értelme Vintedről keresni; a többi
+            # szűrőnél az üres keresőmező csak félrevezető lenne
+            catalog = list(self.selected.get("catalog") or [])
+            on_search = lambda kw: fetch_brands(kw, catalog)
         popup = MultiSelectPopup(self.root, self.facet_titles.get(key, key), opts,
                                  self.selected.get(key) or [],
                                  on_search=on_search)
@@ -2279,10 +2277,16 @@ class VintedMonitorGUI:
             if key == "status":
                 lookup.update({str(k): v for k, v in STATUS_OPTIONS})
 
-        titles = [lookup.get(str(i), str(i))
-                  for i in (self.selected.get(key) or [])]
-        if not titles:
+        ids = [str(i) for i in (self.selected.get(key) or [])]
+        if not ids:
             btn.configure(text=base)
+            return
+        titles = [lookup.get(i) for i in ids]
+        # Ha valamelyik nevét nem ismerjük (még nem töltődött a kategóriafa,
+        # vagy ismeretlen kód), csak számot mutatunk: nyers azonosító nem
+        # kerülhet a feliratra, az nem mond semmit az embereknek.
+        if not all(titles):
+            btn.configure(text=f"{base} ({len(ids)})")
             return
         brief = " + ".join(titles[:2])
         if len(titles) > 2:
@@ -2325,8 +2329,6 @@ class VintedMonitorGUI:
     def _save_settings(self):
         """Minden beállítás kiírása — a Beállítások ablak bezárásakor."""
         self._save_webhook()
-        self.keep_history_var.set(load_bool(KEEP_HISTORY_KEY,
-                                            self.keep_history_var.get()))
         save_bool(KEEP_HISTORY_KEY, self.keep_history_var.get())
         save_bool(DESKTOP_KEY, self.desktop_var.get())
         try:
@@ -2406,7 +2408,6 @@ class VintedMonitorGUI:
         self._rebuild_chips()
         self._update_filter_button("catalog")
         cid = (keep or [None])[0]
-        self._catalog_url = cat_url if cid else None
         self._update_clear_btn()
         if not cid:
             return
@@ -2462,18 +2463,41 @@ class VintedMonitorGUI:
                 self._apply_category_tree(payload[0])
             elif kind == "catfilters":
                 self._apply_category_filters(payload[0])
+            elif kind == "webhook":
+                self._show_webhook_result(payload[0])
             else:
                 self._filter_load_error(payload[0])
         self._schedule(120, self._poll_filters_result)
 
+    def _show_webhook_result(self, result):
+        """A Beállítások ablak webhook-tesztjének eredménye (fő szálon).
+
+        Ha a felhasználó bezárta közben az ablakot, a naplóba kerül —
+        onnan éppúgy látszik, mint az ablakból.
+        """
+        ok, msg = result
+        win = self.settings_win
+        if not (win and win.winfo_exists()):
+            self._log(f"[{'ok' if ok else 'err'}] Discord webhook: {msg}")
+            return
+        win.test_status.configure(text=msg, fg=GREEN if ok else RED)
+
     def _apply_category_tree(self, tree):
         self._close_loading()
-        self.category_tree = tree
+        # a `None` is átmegy rajta: az üres fa nem kivétel, csak nincs
+        # kategóriaszűrő — és a `len()` rajta nem dobhat, mert ez az
+        # `after`-függvény törpefolyamatát is megölné
+        self.category_tree = list(tree or [])
         self._catalog_lookup = None
         self._update_filter_button("catalog")
-        self._log(f"[ok] Kategóriafa betöltve: {len(tree)} gyökércsoport")
-        self._log("[dim] A kategória szűrői a kategória kiválasztása után "
-                  "jelennek meg a chip-sorban.")
+        if self.category_tree:
+            self._log(f"[ok] Kategóriafa betöltve: "
+                      f"{len(self.category_tree)} gyökércsoport")
+            self._log("[dim] A kategória szűrői a kategória kiválasztása "
+                      "után jelennek meg a chip-sorban.")
+        else:
+            self._log("[warn] Üres kategóriafa érkezett — a kategória-szűrő "
+                      "egyelőre nem használható.")
         self._set_status(GREEN, "Készenlét", "kategóriák betöltve")
 
     def _filter_load_error(self, e):
